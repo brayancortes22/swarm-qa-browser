@@ -1,0 +1,151 @@
+const $ = (id) => document.getElementById(id);
+const els = {
+  busDot: $('busDot'), busText: $('busText'), portInput: $('portInput'), savePortBtn: $('savePortBtn'),
+  tabUrl: $('tabUrl'), tabViewport: $('tabViewport'), probeCheck: $('probeCheck'), consentCheck: $('consentCheck'),
+  enableBtn: $('enableBtn'), detachBtn: $('detachBtn'), exportBtn: $('exportBtn'), feedback: $('feedback')
+};
+
+let activeTab = null;
+let sessionActive = false;
+
+function setFeedback(text = '', kind = '') {
+  els.feedback.textContent = text;
+  els.feedback.className = `feedback${kind ? ` ${kind}` : ''}`;
+}
+
+function parseTarget(rawUrl) {
+  try {
+    const u = new URL(String(rawUrl || ''));
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    const isLocal = u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+    return { url: u, isLocal, originPattern: `${u.protocol}//${u.hostname}/*` };
+  } catch {
+    return null;
+  }
+}
+
+function renderBus(connected, port) {
+  els.busDot.classList.toggle('on', Boolean(connected));
+  els.busText.textContent = connected ? 'Conectado' : 'Desconectado';
+  if (port && document.activeElement !== els.portInput) els.portInput.value = String(port);
+}
+
+function renderTab(tabInfo, sessionTab) {
+  const rawUrl = sessionTab?.url || tabInfo?.url || '';
+  const target = parseTarget(rawUrl);
+  els.tabUrl.textContent = target ? `${target.url.host}${target.url.pathname}` : (rawUrl || 'Página interna no auditable');
+  els.tabUrl.title = rawUrl;
+  sessionActive = Boolean(sessionTab?.debuggerAttached);
+  if (sessionTab?.viewport?.width) {
+    els.tabViewport.textContent = `${sessionTab.viewport.width}×${sessionTab.viewport.height}`;
+  } else {
+    els.tabViewport.textContent = sessionActive ? 'Activo' : 'Sin sesión';
+  }
+  if (sessionActive) els.consentCheck.checked = true;
+  els.enableBtn.disabled = !target || !els.consentCheck.checked;
+  els.detachBtn.disabled = !sessionActive;
+  els.exportBtn.disabled = !sessionActive;
+}
+
+async function refreshStatus() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  activeTab = tab || null;
+  const res = await chrome.runtime.sendMessage({ type: 'get_status', tabId: activeTab?.id });
+  if (res?.ok) {
+    renderBus(res.busConnected, res.port);
+    renderTab(activeTab, res.tab);
+  } else {
+    renderBus(false, 47921);
+    renderTab(activeTab, null);
+  }
+}
+
+els.consentCheck.addEventListener('change', () => {
+  const target = parseTarget(activeTab?.url);
+  els.enableBtn.disabled = !target || !els.consentCheck.checked;
+});
+
+els.savePortBtn.addEventListener('click', async () => {
+  const port = Number(els.portInput.value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    setFeedback('Ingresa un puerto válido entre 1 y 65535.', 'err');
+    return;
+  }
+  const res = await chrome.runtime.sendMessage({ type: 'set_port', port });
+  if (!res?.ok) {
+    setFeedback(res?.error || 'No se pudo actualizar el puerto.', 'err');
+    return;
+  }
+  renderBus(res.busConnected, res.port);
+  setFeedback(res.busConnected ? `Bus conectado en puerto ${res.port}.` : `Puerto ${res.port} guardado (Bus sin conexión).`, res.busConnected ? 'ok' : '');
+});
+
+els.enableBtn.addEventListener('click', async () => {
+  if (!els.consentCheck.checked) {
+    setFeedback('Debes aceptar el consentimiento explícito antes de depurar.', 'err');
+    return;
+  }
+  const target = parseTarget(activeTab?.url);
+  if (!activeTab?.id || !target) {
+    setFeedback('Abre una pestaña http:// o https:// válida para iniciar QA.', 'err');
+    return;
+  }
+  if (!target.isLocal) {
+    const granted = await chrome.permissions.request({ origins: [target.originPattern] });
+    if (!granted) {
+      setFeedback(`Permiso denegado para ${target.originPattern}.`, 'err');
+      return;
+    }
+  }
+  els.enableBtn.disabled = true;
+  els.enableBtn.textContent = 'Activando sesión...';
+  setFeedback('');
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: 'authorize_tab',
+      tabId: activeTab.id,
+      url: activeTab.url,
+      probeEnabled: els.probeCheck.checked
+    });
+    if (!res?.ok) throw new Error(res?.error || 'Error al autorizar pestaña');
+    renderBus(res.busConnected, Number(els.portInput.value));
+    renderTab(activeTab, res.tab);
+    setFeedback(res.busConnected ? 'Enjambre activo y conectado al Bus local.' : `Sesión lista. Inicia el Bus en 127.0.0.1:${els.portInput.value}.`, 'ok');
+  } catch (err) {
+    setFeedback(err?.message || String(err), 'err');
+    await refreshStatus();
+  } finally {
+    els.enableBtn.textContent = 'Habilitar permisos y arrancar enjambre';
+  }
+});
+
+els.detachBtn.addEventListener('click', async () => {
+  if (!activeTab?.id) return;
+  const target = parseTarget(activeTab.url);
+  const res = await chrome.runtime.sendMessage({ type: 'detach_tab', tabId: activeTab.id });
+  if (target && !target.isLocal) {
+    await chrome.permissions.remove({ origins: [target.originPattern] }).catch(() => false);
+  }
+  els.consentCheck.checked = false;
+  await refreshStatus();
+  setFeedback(res?.ok ? 'Depuración detenida y permisos revocados.' : (res?.error || 'Error al desconectar.'), res?.ok ? 'ok' : 'err');
+});
+
+els.exportBtn.addEventListener('click', async () => {
+  if (!activeTab?.id) return;
+  const res = await chrome.runtime.sendMessage({ type: 'export_findings', tabId: activeTab.id });
+  if (!res?.ok || !res.report) {
+    setFeedback(res?.error || 'No se pudo exportar el reporte.', 'err');
+    return;
+  }
+  const blob = new Blob([JSON.stringify(res.report, null, 2)], { type: 'application/json' });
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = `swarm-qa-findings-${activeTab.id}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(href), 1000);
+  setFeedback(`Exportados ${res.report.findings?.length ?? 0} hallazgos en JSON.`, 'ok');
+});
+
+refreshStatus().catch((err) => setFeedback(err?.message || 'Error al cargar estado.', 'err'));

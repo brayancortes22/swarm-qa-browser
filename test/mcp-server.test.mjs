@@ -219,6 +219,12 @@ describe('mcp-server tools & stdio transport', () => {
       assert.equal(spawned.data.spawned.length, 2);
       assert.equal(tab.state.commands.at(-1).action, 'spawn_cursors');
 
+      await client.callTool('swarm_move_cursor', { tabId: 101, agentId: 'layout', x: 120, y: 80, status: 'Inspecting' });
+      assert.ok(tab.state.commands.some((c) => c.action === 'move_cursor' && c.x === 120 && c.status === 'Inspecting'));
+
+      const unknown = await client.request('tools/call', { name: 'swarm_nonexistent', arguments: {} });
+      assert.equal(unknown.error.code, -32602);
+
       // Run DOM audit & verify deduplication on second run
       const audit1 = await client.callTool('swarm_run_dom_audit', { tabId: 101, agentId: 'layout' });
       assert.equal(audit1.data.untrustedPageData, true);

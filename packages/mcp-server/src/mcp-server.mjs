@@ -11,16 +11,14 @@ const pick = (src, keys) => Object.fromEntries(keys.filter((k) => src?.[k] !== u
 const tabOf = (st, id) => st.tabs.find((t) => t.tabId === (id ?? st.selectedTabId)) || null;
 const dedupKey = (f) => `${f.ruleId || ''}::${f.selector || ''}::${f.description || ''}`;
 
-function httpClient(url, token) {
-  return {
-    async rpc(action, params = {}) {
-      const res = await fetch(`${url}/rpc`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-swarm-token': token }, body: JSON.stringify({ action, params }) });
-      const data = await res.json();
-      if (!res.ok || !data?.ok) throw Object.assign(new Error(data?.error || `RPC ${action} failed`), { code: data?.code || 'RPC_ERROR', statusCode: res.status });
-      return data.result;
-    }
-  };
-}
+const httpClient = (url, token) => ({
+  rpc: async (action, params = {}) => {
+    const res = await fetch(`${url}/rpc`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-swarm-token': token }, body: JSON.stringify({ action, params }) });
+    const data = await res.json();
+    if (!res.ok || !data?.ok) throw Object.assign(new Error(data?.error || `RPC ${action} failed`), { code: data?.code || 'RPC_ERROR', statusCode: res.status });
+    return data.result;
+  }
+});
 
 async function resolveBus(registryPath, busClient) {
   if (typeof busClient?.rpc === 'function') return { client: busClient, ownedBus: null };
@@ -39,11 +37,8 @@ async function resolveBus(registryPath, busClient) {
 
 async function refreshPins(rpc, tabIds, status) {
   const st = status || await rpc('session.status', {}), byId = new Map(st.tabs.map((t) => [t.tabId, t]));
-  for (const tid of new Set(tabIds)) {
-    const tab = byId.get(tid);
-    if (!tab) continue;
-    const tickets = await rpc('tickets.list', { tabId: tid });
-    await rpc('tab.command', { tabId: tid, command: { action: 'set_tickets', tickets, pathname: tab.pathname } });
+  for (const tid of new Set(tabIds)) if (byId.has(tid)) {
+    await rpc('tab.command', { tabId: tid, command: { action: 'set_tickets', tickets: await rpc('tickets.list', { tabId: tid }), pathname: byId.get(tid).pathname } });
   }
 }
 
@@ -72,12 +67,10 @@ async function runDomAuditTool(rpc, args) {
   if (!tab) throw new Error(`Tab ${args.tabId ?? '(none)'} is not connected`);
   await moveCursorCmd(rpc, tab.tabId, args, 'layout', 'Auditando');
   const audit = await rpc('tab.command', { tabId: tab.tabId, command: { action: 'run_audit', ...pick(args, ['checks', 'viewport']) } });
-  const findings = Array.isArray(audit?.findings) ? audit.findings : [];
-  const pathname = audit?.pathname ?? tab.pathname ?? '/', viewport = audit?.viewport ?? args.viewport ?? tab.viewport ?? null;
+  const findings = Array.isArray(audit?.findings) ? audit.findings : [], pathname = audit?.pathname ?? tab.pathname ?? '/', viewport = audit?.viewport ?? args.viewport ?? tab.viewport ?? null;
   const existing = await rpc('tickets.list', { tabId: tab.tabId, pathname, ...(viewport?.width ? { viewportWidth: viewport.width } : {}) });
   const seen = new Set(existing.filter((t) => t.status !== 'verified').map(dedupKey)), createdTickets = [];
-  if (args.createTickets !== false) for (const f of findings) {
-    if (seen.has(dedupKey(f))) continue;
+  if (args.createTickets !== false) for (const f of findings) if (!seen.has(dedupKey(f))) {
     seen.add(dedupKey(f));
     createdTickets.push(await rpc('tickets.create', { ...pick(f, ['ruleId', 'severity', 'category', 'selector', 'rect', 'description', 'expected', 'actual']), tabId: tab.tabId, url: tab.url || '', pathname, viewport, reportedBy: args.agentId || f.category || 'qa-auditor' }));
   }
@@ -92,18 +85,16 @@ async function markFixedTool(rpc, args) {
   const st = await rpc('session.status', {}), byId = new Map(st.tabs.map((t) => [t.tabId, t]));
   const tabIds = [...new Set(tickets.map((t) => t.tabId).filter((id) => byId.has(id)))];
   for (const tid of tabIds) await moveCursorCmd(rpc, tid, { agentId: args.verifierAgentId || 'layout', role: 'layout' }, 'layout', 'Re-verificando');
-  const verifications = [];
+  const verifications = [], groups = new Map();
   if (args.autoVerify !== false) {
-    const groups = new Map();
     for (const t of tickets) if (t.ruleId && t.ruleId !== 'manual' && byId.has(t.tabId)) {
       const k = `${t.tabId}::${t.viewport?.width || 0}x${t.viewport?.height || 0}`;
       (groups.get(k) || groups.set(k, []).get(k)).push(t);
     }
     for (const group of groups.values()) {
       const tab = byId.get(group[0].tabId), vp = group[0].viewport;
-      if (vp?.width > 0 && (tab.viewport?.width !== vp.width || tab.viewport?.height !== vp.height)) {
+      if (vp?.width > 0 && (tab.viewport?.width !== vp.width || tab.viewport?.height !== vp.height))
         await withMutationLock(rpc, { tabId: tab.tabId, agentId: args.verifierAgentId || 'responsive', role: 'responsive' }, 'viewport', 'responsive', 'Re-verificando', { action: 'set_viewport', width: vp.width, height: vp.height, mobile: vp.width <= 480 });
-      }
       const audit = await rpc('tab.command', { tabId: tab.tabId, command: { action: 'run_audit', ...(vp ? { viewport: vp } : {}) } });
       const findings = Array.isArray(audit?.findings) ? audit.findings : [];
       for (const t of group) {
@@ -122,7 +113,7 @@ async function markFixedTool(rpc, args) {
 
 function buildHandlers(ensureBus) {
   const call = async (action, params) => (await ensureBus()).rpc(action, params);
-  const mut = (scope, role, statusFn, cmdFn) => (a) => withMutationLock(call, a, scope, role, statusFn(a), cmdFn(a));
+  const mut = (scope, role, action, keys, statusFn, extra) => (a) => withMutationLock(call, a, scope, role, statusFn(a), { action, ...pick(a, keys), ...(extra ? extra(a) : {}) });
   return {
     swarm_session_status: (a) => call('session.status', { tabId: a.tabId }),
     swarm_select_tab: (a) => call('tabs.select', { tabId: a.tabId }),
@@ -134,17 +125,16 @@ function buildHandlers(ensureBus) {
     swarm_move_cursor: (a) => moveCursorCmd(call, a.tabId, a, 'layout'),
     swarm_acquire_lock: (a) => call('lock.acquire', pick(a, ['agentId', 'tabId', 'scope', 'ttlMs'])),
     swarm_release_lock: (a) => call('lock.release', pick(a, ['agentId', 'tabId'])),
-    swarm_set_viewport: mut('viewport', 'responsive', (a) => `Viewport ${a.width}x${a.height}`, (a) => ({ action: 'set_viewport', width: a.width, height: a.height, mobile: a.mobile ?? a.width <= 480, ...pick(a, ['deviceScaleFactor']) })),
-    swarm_click: mut('interaction', 'interactive', () => 'Click', (a) => ({ action: 'click', ...pick(a, ['selector', 'x', 'y', 'button', 'clickCount']) })),
-    swarm_fill: mut('interaction', 'interactive', () => 'Fill', (a) => ({ action: 'fill', ...pick(a, ['selector', 'value', 'clear']) })),
-    swarm_press_key: mut('interaction', 'interactive', (a) => `Key ${a.key}`, (a) => ({ action: 'press_key', ...pick(a, ['key', 'selector', 'modifiers']) })),
-    swarm_navigate: mut('interaction', 'interactive', () => 'Navigate', (a) => ({ action: 'navigate', url: a.url })),
+    swarm_set_viewport: mut('viewport', 'responsive', 'set_viewport', ['width', 'height', 'deviceScaleFactor'], (a) => `Viewport ${a.width}x${a.height}`, (a) => ({ mobile: a.mobile ?? a.width <= 480 })),
+    swarm_click: mut('interaction', 'interactive', 'click', ['selector', 'x', 'y', 'button', 'clickCount'], () => 'Click'),
+    swarm_fill: mut('interaction', 'interactive', 'fill', ['selector', 'value', 'clear'], () => 'Fill'),
+    swarm_press_key: mut('interaction', 'interactive', 'press_key', ['key', 'selector', 'modifiers'], (a) => `Key ${a.key}`),
+    swarm_navigate: mut('interaction', 'interactive', 'navigate', ['url'], () => 'Navigate'),
     swarm_run_dom_audit: (a) => runDomAuditTool(call, a),
     swarm_report_finding: async (a) => {
-      const st = await call('session.status', {}), tab = tabOf(st, a.tabId), tabId = a.tabId ?? tab?.tabId ?? null, pathname = a.pathname ?? (a.url ? undefined : tab?.pathname ?? '/');
-      const ticket = await call('tickets.create', { ...a, tabId, url: a.url ?? tab?.url ?? '', ...(pathname !== undefined ? { pathname } : {}), viewport: a.viewport ?? tab?.viewport ?? null, ruleId: a.ruleId || 'manual', reportedBy: a.reportedBy ?? a.agentId ?? 'qa-agent' });
-      if (tab) await refreshPins(call, [tab.tabId], st);
-      return ticket;
+      const st = await call('session.status', {}), tab = tabOf(st, a.tabId), tabId = a.tabId ?? tab?.tabId ?? null, path = a.pathname ?? (a.url ? undefined : tab?.pathname ?? '/');
+      const ticket = await call('tickets.create', { ...a, tabId, url: a.url ?? tab?.url ?? '', ...(path !== undefined ? { pathname: path } : {}), viewport: a.viewport ?? tab?.viewport ?? null, ruleId: a.ruleId || 'manual', reportedBy: a.reportedBy ?? a.agentId ?? 'qa-agent' });
+      if (tab) await refreshPins(call, [tab.tabId], st); return ticket;
     },
     swarm_list_findings: async (a) => { const tickets = await call('tickets.list', pick(a, ['status', 'tabId', 'pathname', 'viewportWidth'])); return { tickets, count: tickets.length, untrustedPageData: true }; },
     swarm_claim_findings: async (a) => { const tickets = await call('tickets.claim', { ticketIds: a.ticketIds ?? a.ids ?? a.id, devAgentId: a.devAgentId ?? a.agentId }); await refreshPins(call, tickets.map((t) => t.tabId)); return { tickets }; },
@@ -163,13 +153,12 @@ export function createMcpServer({ registryPath, busClient, stdin = process.stdin
   const send = (msg, framed) => { const j = JSON.stringify(msg); stdout.write(framed ? `Content-Length: ${Buffer.byteLength(j, 'utf8')}\r\n\r\n${j}` : `${j}\n`); };
   async function handleMessage(msg, framed = false) {
     if (!msg || typeof msg !== 'object' || msg.id === undefined) return;
-    const reply = (result) => send({ jsonrpc: '2.0', id: msg.id, result }, framed);
+    const reply = (result) => send({ jsonrpc: '2.0', id: msg.id, result }, framed), fail = (code, message) => send({ jsonrpc: '2.0', id: msg.id, error: { code, message } }, framed);
     if (msg.method === 'initialize') return reply({ protocolVersion: msg.params?.protocolVersion || '2024-11-05', capabilities: { tools: { listChanged: false } }, serverInfo: SERVER_INFO });
-    if (msg.method === 'ping') return reply({});
-    if (msg.method === 'tools/list') return reply({ tools: SWARM_TOOLS });
-    if (msg.method !== 'tools/call') return send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `Method not found: ${msg.method}` } }, framed);
+    if (msg.method === 'ping' || msg.method === 'tools/list') return reply(msg.method === 'ping' ? {} : { tools: SWARM_TOOLS });
+    if (msg.method !== 'tools/call') return fail(-32601, `Method not found: ${msg.method}`);
     const fn = handlers[msg.params?.name];
-    if (!fn) return send({ jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: `Unknown tool: ${msg.params?.name}` } }, framed);
+    if (!fn) return fail(-32602, `Unknown tool: ${msg.params?.name}`);
     try { return reply({ content: [{ type: 'text', text: JSON.stringify(await fn(msg.params?.arguments || {})) }] }); }
     catch (err) { return reply({ isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err?.message ?? String(err), code: err?.code ?? 'TOOL_ERROR' }) }] }); }
   }
@@ -182,17 +171,14 @@ export function createMcpServer({ registryPath, busClient, stdin = process.stdin
     while (buf.length > 0) {
       while (buf.length && (buf[0] === 0x0a || buf[0] === 0x0d)) buf = buf.subarray(1);
       if (!buf.length) break;
-      if (/^content-length:/i.test(buf.subarray(0, 16).toString('utf8'))) {
-        const cr = buf.indexOf('\r\n\r\n'), lf = buf.indexOf('\n\n'), idx = cr !== -1 ? cr : lf, sep = cr !== -1 ? 4 : 2;
-        if (idx === -1) break;
-        const len = Number(/content-length:\s*(\d+)/i.exec(buf.subarray(0, idx).toString('utf8'))?.[1] || 0);
-        if (buf.length < idx + sep + len) break;
-        dispatch(buf.subarray(idx + sep, idx + sep + len).toString('utf8'), true); buf = buf.subarray(idx + sep + len);
-      } else {
-        const nl = buf.indexOf(0x0a); if (nl === -1) break;
-        const line = buf.subarray(0, nl).toString('utf8').trim(); buf = buf.subarray(nl + 1);
-        if (line) dispatch(line, false);
-      }
+      const cl = /^content-length:/i.test(buf.subarray(0, 16).toString('utf8'));
+      const sepIdx = cl ? (buf.indexOf('\r\n\r\n') + 1 || buf.indexOf('\n\n') + 1) - 1 : buf.indexOf(0x0a);
+      if (sepIdx === -1) break;
+      if (cl) {
+        const sep = buf[sepIdx] === 0x0d ? 4 : 2, len = Number(/content-length:\s*(\d+)/i.exec(buf.subarray(0, sepIdx).toString('utf8'))?.[1] || 0);
+        if (buf.length < sepIdx + sep + len) break;
+        dispatch(buf.subarray(sepIdx + sep, sepIdx + sep + len).toString('utf8'), true); buf = buf.subarray(sepIdx + sep + len);
+      } else { const line = buf.subarray(0, sepIdx).toString('utf8').trim(); buf = buf.subarray(sepIdx + 1); if (line) dispatch(line, false); }
     }
   };
   stdin.on('data', onData);
@@ -200,11 +186,9 @@ export function createMcpServer({ registryPath, busClient, stdin = process.stdin
   return { start: () => ensureBus(), close, ensureBus, handleMessage };
 }
 
-const entry = process.argv[1] ? resolve(process.argv[1]).toLowerCase() : '';
-if (entry === fileURLToPath(import.meta.url).toLowerCase()) {
-  const srv = createMcpServer();
+if (process.argv[1] && resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase()) {
+  const srv = createMcpServer(), shutdown = async () => { await srv.close(); process.exit(0); };
   void srv.start().catch((err) => { process.stderr.write(`${err?.message ?? err}\n`); process.exit(1); });
-  const shutdown = async () => { await srv.close(); process.exit(0); };
   process.stdin.once('end', shutdown);
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.once(sig, shutdown);
 }
