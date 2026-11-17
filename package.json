@@ -1,0 +1,21 @@
+{
+  "name": "swarm-qa-browser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-cursor live QA, responsive audit, and closed-loop Dev verification bridge across Chrome MV3, MCP, and CDP.",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "build:overlay": "node scripts/build-overlay.mjs",
+    "generate:key": "node scripts/generate-extension-key.mjs",
+    "start:bus": "node packages/core/src/cli-bus.mjs",
+    "start:mcp": "node packages/mcp-server/src/mcp-server.mjs",
+    "start:cdp": "node packages/cdp-adapter/src/cdp-bridge.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
