@@ -31,7 +31,7 @@ function resolveTarget(doc, data) {
   }
 }
 
-export function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.window, nonce = '', onEvent, onAction } = {}) {
+export function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.window, nonce = '', onEvent, onAction, clearConsoleOnRouteChange = false, clearOnRouteChange = false } = {}) {
   if (!doc) throw new Error('mountSwarmOverlay requires a document');
   doc.getElementById?.('__swarm_qa_overlay')?.remove?.();
 
@@ -65,7 +65,8 @@ export function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.
     const next = getRoute();
     if (next === currentRoute) return;
     currentRoute = next;
-    issuePins.setTickets(cachedTickets, currentRoute);
+    if (clearConsoleOnRouteChange || clearOnRouteChange) consoleCollector.clear();
+    issuePins.setTickets(cachedTickets, currentRoute, win?.innerWidth);
     onEvent?.({ type: 'route_change', pathname: currentRoute });
   };
 
@@ -117,12 +118,15 @@ export function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.
     };
     const consoleEntries = opts.consoleEntries ?? consoleCollector.getEntries();
     const findings = runDomAudit({ doc, win, checks: opts.checks, viewport: vp, consoleEntries });
+    if (opts.clearConsole) consoleCollector.clear();
     return { pathname: getRoute(), viewport: vp, findings };
   }
 
-  function setTickets(tickets = [], pathname) {
+  function setTickets(tickets = [], pathname, opts = {}) {
     cachedTickets = Array.isArray(tickets) ? tickets : [];
-    issuePins.setTickets(cachedTickets, pathname || getRoute());
+    const vpWidth = typeof opts === 'number' ? opts : opts?.viewportWidth;
+    if (opts?.clearConsole) consoleCollector.clear();
+    issuePins.setTickets(cachedTickets, pathname || getRoute(), vpWidth ?? win?.innerWidth);
   }
 
   function destroy() {
@@ -145,6 +149,7 @@ export function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.
     removeCursor: (id) => cursors.removeCursor(id),
     runAudit,
     setTickets,
+    clearConsole: () => consoleCollector.clear(),
     updateSummary: (stats) => issuePins.updateSummary(stats),
     getRoute,
     probeSource: () => MAIN_WORLD_PROBE_SOURCE(nonce),

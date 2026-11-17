@@ -1,4 +1,4 @@
-const CTRL_RE = /[\u0000-\u001F\u007F-\u009F]/g;
+const CTRL_RE = /[\u0000-\u001F\u007F-\u009F\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g;
 const sevOf = (s) => (/^(P1|critical)$/i.test(s) ? ['P1', '#F24822', '#ffffff'] : /^(P2|high)$/i.test(s) ? ['P2', '#FFC700', '#0a0b0f'] : ['P3', '#0D99FF', '#ffffff']);
 const STATUS = {
   open: ['●', '#f4f4f5', 'Abierto'], claimed: ['◐', '#a78bfa', 'En curso'],
@@ -20,6 +20,7 @@ const STYLES = `.swarm-pins-layer{pointer-events:none;position:fixed;inset:0;z-i
 .swarm-hud.is-collapsed .swarm-hud-stats,.swarm-hud.is-collapsed [data-action="reaudit"],.swarm-hud.is-collapsed [data-action="clear"]{display:none}`;
 const txt = (v, max = 280) => String(v ?? '').replace(/[\r\n\t]+/g, ' ').replace(CTRL_RE, '').slice(0, max);
 const clamp = (n, min, max) => Math.max(min, Math.min(max, Number.isFinite(Number(n)) ? Number(n) : min));
+const posNum = (v) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) && Number.isFinite(Number(v)) && Number(v) > 0;
 const addAll = (parent, nodes) => nodes.forEach((n) => parent.appendChild(n));
 
 /**
@@ -37,7 +38,8 @@ export function createIssuePins(shadowRoot, callbacks = {}) {
     if (attrs) Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
     return el;
   };
-  const style = mk('style', '', STYLES);
+  const style = mk('style');
+  style.textContent = STYLES;
   const layer = mk('div', 'swarm-pins-layer');
   const hud = mk('div', 'swarm-hud');
   const statsWrap = mk('div', 'swarm-hud-stats');
@@ -99,11 +101,19 @@ export function createIssuePins(shadowRoot, callbacks = {}) {
     popEl = pop;
   }
 
-  function setTickets(tickets = [], currentPathname) {
+  function setTickets(tickets = [], currentPathname, currentViewportWidth) {
     if (layer.replaceChildren) layer.replaceChildren(); else while (layer.firstChild) layer.removeChild(layer.firstChild);
     popEl = null;
     const hasPath = typeof currentPathname === 'string' && currentPathname.length > 0;
-    const visible = (Array.isArray(tickets) ? tickets : []).filter((t) => !hasPath || !t?.pathname || t.pathname === currentPathname);
+    const hasVp = posNum(currentViewportWidth), curW = hasVp ? Number(currentViewportWidth) : 0;
+    const visible = (Array.isArray(tickets) ? tickets : []).filter((t) => {
+      if (hasPath && t?.pathname && t.pathname !== currentPathname) return false;
+      if (hasVp && posNum(t?.viewport?.width)) {
+        const w = Number(t.viewport.width);
+        return (w <= 480) === (curW <= 480) || Math.abs(w - curW) <= 160;
+      }
+      return true;
+    });
     const placed = [], pinEls = [];
     visible.forEach((ticket, i) => {
       const tid = txt(ticket.id ?? `idx-${i}`, 48);

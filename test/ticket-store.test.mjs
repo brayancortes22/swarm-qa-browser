@@ -39,9 +39,11 @@ describe('roles', () => {
 });
 
 describe('sanitizePageText', () => {
-  it('strips ASCII control chars except tab/newline, truncates to 280, and preserves [redacted]', () => {
+  it('strips ASCII control, ANSI CSI, bidi overrides, and zero-width chars while preserving tab/newline and [redacted]', () => {
     const dirty = 'A\x00B\tC\nD\r\x1B[31mE\x7F [redacted]';
-    assert.equal(sanitizePageText(dirty), 'AB\tC\nD[31mE [redacted]');
+    assert.equal(sanitizePageText(dirty), 'AB\tC\nDE [redacted]');
+    const bidi = 'Safe\u202Eevil\u200B\u200F\u202A\u2066\u206F\uFEFF \x1b[1;32mOK\u009b0m [redacted]';
+    assert.equal(sanitizePageText(bidi), 'Safeevil OK [redacted]');
     assert.equal(sanitizePageText('[redacted]'), '[redacted]');
     assert.equal(sanitizePageText(null), '');
 
@@ -57,33 +59,43 @@ describe('sanitizePageText', () => {
 });
 
 describe('TicketStore', () => {
-  it('creates sanitized untrusted tickets and filters list by tabId, pathname, viewportWidth, and status', () => {
+  it('creates sanitized untrusted tickets with normalized rect and filters list by tabId, pathname, viewportWidth, and status', () => {
     const store = new TicketStore();
     const t1 = store.create({
       tabId: 1, url: 'http://localhost:5173/library', pathname: '/library',
-      viewport: { width: 390, height: 844 }, selector: '.track-row', ruleId: 'tap-target',
-      severity: 'high', category: 'responsive',
-      description: 'Button\x00 too small\n[redacted] ' + 'z'.repeat(300),
+      viewport: { width: 390, height: 844 }, rect: { x: 12, y: 24, width: 120, height: 32 },
+      selector: '.track-row', ruleId: 'tap-target', severity: 'high', category: 'responsive',
+      description: 'Button\x00\u202E too small\n[redacted] ' + 'z'.repeat(300),
       expected: '44x44', actual: '32x32', reportedBy: 'qa-responsive'
     });
     const t2 = store.create({
       tabId: 1, url: 'http://localhost:5173/settings',
       viewport: { width: 1440, height: 900 }, description: 'Desktop overlap'
     });
+    const t3 = store.create({
+      tabId: 1, pathname: '/bad-rect',
+      rect: { x: '15', y: Number.NaN, width: Number.POSITIVE_INFINITY, height: -0, extra: 'ignore' },
+      description: 'Bad rect normalization'
+    });
 
     assert.equal(t1.round, 1);
     assert.equal(t1.status, 'open');
     assert.equal(t1.untrustedPageData, true);
+    assert.deepEqual(t1.rect, { x: 12, y: 24, width: 120, height: 32 });
     assert.equal(t1.description.length, 280);
     assert.ok(t1.description.includes('\n[redacted]'));
     assert.equal(t2.pathname, '/settings');
+    assert.equal(t2.rect, null);
+    assert.deepEqual(t3.rect, { x: 15, y: 0, width: 0, height: 0 });
 
     assert.equal(store.list({ tabId: 1, pathname: '/library', viewportWidth: 390 }).length, 1);
-    assert.equal(store.list({ status: 'open' }).length, 2);
+    assert.equal(store.list({ status: 'open' }).length, 3);
 
     const fetched = store.get(t1.id);
     fetched.status = 'tampered';
+    fetched.rect.x = 9999;
     assert.equal(store.get(t1.id).status, 'open');
+    assert.equal(store.get(t1.id).rect.x, 12);
   });
 
   it('enforces exact 3-round escalation and blocks further claims once escalated', () => {
@@ -138,5 +150,20 @@ describe('TicketStore', () => {
     assert.equal(verified.evidence, 'Accessible name present');
 
     assert.throws(() => store.claim([ticket.id], 'dev-2'), /verified/i);
+  });
+
+  it('strictly enforces claimedBy ownership in markFixed even when devAgentId is omitted or empty', () => {
+    const store = new TicketStore();
+    const ticket = store.create({ tabId: 3, pathname: '/checkout', description: 'Button clipped' });
+    store.claim([ticket.id], 'dev-owner');
+
+    assert.throws(() => store.markFixed([ticket.id], { summary: 'omitted agent' }), /claimed by "dev-owner"/i);
+    assert.throws(() => store.markFixed([ticket.id], { devAgentId: '', summary: 'empty agent' }), /claimed by "dev-owner"/i);
+    assert.throws(() => store.markFixed([ticket.id], { devAgentId: 'dev-other', summary: 'wrong agent' }), /claimed by "dev-owner"/i);
+    assert.equal(store.get(ticket.id).status, 'claimed');
+
+    const fixed = store.markFixed([ticket.id], { devAgentId: 'dev-owner', summary: 'Owner fixed layout' });
+    assert.equal(fixed[0].status, 'awaiting_reverify');
+    assert.equal(fixed[0].claimedBy, 'dev-owner');
   });
 });

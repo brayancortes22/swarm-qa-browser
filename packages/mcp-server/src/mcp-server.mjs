@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_ROLES, resolveRole } from '../../core/src/roles.mjs';
@@ -6,85 +7,85 @@ import { startSwarmBus } from '../../core/src/swarm-bus.mjs';
 import { SWARM_TOOLS } from './tool-schemas.mjs';
 
 const SERVER_INFO = { name: 'swarm-qa-browser', version: '0.1.0' };
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']), sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const TICKET_FIELDS = ['ruleId', 'severity', 'category', 'selector', 'rect', 'description', 'expected', 'actual'];
 const pick = (src, keys) => Object.fromEntries(keys.filter((k) => src?.[k] !== undefined).map((k) => [k, src[k]]));
 const tabOf = (st, id) => st.tabs.find((t) => t.tabId === (id ?? st.selectedTabId)) || null;
 const dedupKey = (f) => `${f.ruleId || ''}::${f.selector || ''}::${f.description || ''}`;
+const trackCursor = (map, tid, id) => (tid != null && id ? (map.get(tid) || map.set(tid, new Set()).get(tid)).add(id) : null);
 
-const httpClient = (url, token) => ({
-  rpc: async (action, params = {}) => {
-    const res = await fetch(`${url}/rpc`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-swarm-token': token }, body: JSON.stringify({ action, params }) });
-    const data = await res.json();
-    if (!res.ok || !data?.ok) throw Object.assign(new Error(data?.error || `RPC ${action} failed`), { code: data?.code || 'RPC_ERROR', statusCode: res.status });
-    return data.result;
-  }
-});
-
+const httpClient = (url, token) => ({ rpc: async (action, params = {}) => {
+  const res = await fetch(`${url}/rpc`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-swarm-token': token }, body: JSON.stringify({ action, params }) });
+  const data = await res.json();
+  if (!res.ok || !data?.ok) throw Object.assign(new Error(data?.error || `RPC ${action} failed`), { code: data?.code || 'RPC_ERROR', statusCode: res.status });
+  return data.result;
+} });
 async function resolveBus(registryPath, busClient) {
   if (typeof busClient?.rpc === 'function') return { client: busClient, ownedBus: null };
   if (busClient?.url && busClient?.token) return { client: httpClient(busClient.url, busClient.token), ownedBus: null };
   const regPath = registryPath || getRegistryPath(), reg = readBusRegistry(regPath);
   if (reg?.port && reg?.token) {
-    const h = reg.host || '127.0.0.1', url = `http://${h.includes(':') ? `[${h}]` : h}:${reg.port}`;
-    try {
-      const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(1500) });
+    const raw = String(reg.host || '127.0.0.1').trim().toLowerCase(), port = Number(reg.port);
+    if (!LOOPBACK.has(raw)) throw new Error(`Refusing non-loopback bus host: ${raw}`);
+    if (Number.isInteger(port) && port >= 1 && port <= 65535) try {
+      const url = `http://${raw === '::1' ? '[::1]' : raw}:${port}`, res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(1500) });
       if (res.ok && (await res.json())?.ok) return { client: httpClient(url, reg.token), ownedBus: null };
     } catch { /* dead/unreachable bus -> start embedded */ }
   }
   const bus = await startSwarmBus({ registryPath: regPath });
   return { client: httpClient(bus.url, bus.token), ownedBus: bus };
 }
-
-async function refreshPins(rpc, tabIds, status) {
-  const st = status || await rpc('session.status', {}), byId = new Map(st.tabs.map((t) => [t.tabId, t]));
-  for (const tid of new Set(tabIds)) if (byId.has(tid)) {
-    await rpc('tab.command', { tabId: tid, command: { action: 'set_tickets', tickets: await rpc('tickets.list', { tabId: tid }), pathname: byId.get(tid).pathname } });
+async function refreshPins(rpc, tabIds, { vpMap, cursors } = {}) {
+  const ids = [...new Set(tabIds)].filter((id) => id != null); if (!ids.length) return;
+  const st = await rpc('session.status', {}), byId = new Map(st.tabs.map((t) => [t.tabId, t])), ts = st.ticketsSummary || {};
+  for (const tid of ids) if (byId.has(tid)) {
+    const tab = byId.get(tid), viewportWidth = vpMap?.get(tid)?.width ?? tab?.viewport?.width;
+    const summary = { activeAgents: cursors?.get(tid)?.size || 0, open: (ts.open || 0) + (ts.reopened || 0), awaiting_reverify: ts.awaiting_reverify || 0, verified: ts.verified || 0 };
+    await rpc('tab.command', { tabId: tid, command: { action: 'set_tickets', tickets: await rpc('tickets.list', { tabId: tid }), pathname: tab.pathname, ...(viewportWidth ? { viewportWidth } : {}), summary } });
   }
 }
-
-function moveCursorCmd(rpc, tabId, args, defaultRole, statusText) {
-  const role = resolveRole(args?.role ?? (args?.agentId || defaultRole));
-  return rpc('tab.command', { tabId, command: { action: 'move_cursor', id: args?.id ?? args?.agentId ?? role.id, label: args?.label ?? role.label, color: args?.color ?? role.color, ...pick(args, ['status', 'x', 'y', 'selector', 'box']), ...(statusText !== undefined ? { status: statusText } : {}) } });
+function moveCursorCmd(rpc, tabId, args, defaultRole, statusText, cursors) {
+  const role = resolveRole(args?.role ?? (args?.agentId || defaultRole)), id = args?.id ?? args?.agentId ?? role.id;
+  if (cursors) trackCursor(cursors, tabId, id);
+  return rpc('tab.command', { tabId, command: { action: 'move_cursor', id, label: args?.label ?? role.label, color: args?.color ?? role.color, ...pick(args, ['status', 'x', 'y', 'selector', 'box']), ...(statusText !== undefined ? { status: statusText } : {}) } });
 }
 
-async function withMutationLock(rpc, args, scope, defaultRole, statusText, command) {
+async function withMutationLock(rpc, args, scope, defaultRole, statusText, command, cursors) {
   const st = await rpc('session.status', { tabId: args.tabId }), tabId = args.tabId ?? st.selectedTabId;
   if (tabId == null) throw new Error('No connected browser tab selected');
+  const lockOwner = (typeof args.agentId === 'string' && args.agentId.trim()) || `mcp-${randomUUID().slice(0, 8)}`;
   const lock = Array.isArray(st.locks) ? st.locks.find((l) => l.tabId === tabId) : st.locks;
-  if (lock?.locked && lock.agentId !== args.agentId) throw new Error(`Tab ${tabId} is locked by "${lock.agentId}"`);
+  if (lock?.locked && lock.agentId !== lockOwner) throw Object.assign(new Error(`Tab ${tabId} is locked by "${lock.agentId}"`), { code: 'LOCK_HELD' });
   let autoAcquired = false;
-  if (!lock?.locked && args.agentId) { await rpc('lock.acquire', { agentId: args.agentId, tabId, scope, ttlMs: 10000 }); autoAcquired = true; }
-  try {
-    await moveCursorCmd(rpc, tabId, args, defaultRole, statusText);
-    return await rpc('tab.command', { tabId, agentId: args.agentId, command });
-  } finally {
-    if (autoAcquired) await rpc('lock.release', { agentId: args.agentId, tabId }).catch(() => {});
-  }
+  if (!lock?.locked) { await rpc('lock.acquire', { agentId: lockOwner, tabId, scope, ttlMs: 15000 }); autoAcquired = true; }
+  try { await moveCursorCmd(rpc, tabId, args, defaultRole, statusText, cursors); return await rpc('tab.command', { tabId, agentId: lockOwner, requireLock: true, command }); }
+  finally { if (autoAcquired) await rpc('lock.release', { agentId: lockOwner, tabId }).catch(() => {}); }
 }
 
-async function runDomAuditTool(rpc, args) {
+async function runDomAuditTool(rpc, args, cursors) {
   const st = await rpc('session.status', {}), tab = tabOf(st, args.tabId);
   if (!tab) throw new Error(`Tab ${args.tabId ?? '(none)'} is not connected`);
-  await moveCursorCmd(rpc, tab.tabId, args, 'layout', 'Auditando');
+  await moveCursorCmd(rpc, tab.tabId, args, 'layout', 'Auditando', cursors);
   const audit = await rpc('tab.command', { tabId: tab.tabId, command: { action: 'run_audit', ...pick(args, ['checks', 'viewport']) } });
   const findings = Array.isArray(audit?.findings) ? audit.findings : [], pathname = audit?.pathname ?? tab.pathname ?? '/', viewport = audit?.viewport ?? args.viewport ?? tab.viewport ?? null;
   const existing = await rpc('tickets.list', { tabId: tab.tabId, pathname, ...(viewport?.width ? { viewportWidth: viewport.width } : {}) });
   const seen = new Set(existing.filter((t) => t.status !== 'verified').map(dedupKey)), createdTickets = [];
   if (args.createTickets !== false) for (const f of findings) if (!seen.has(dedupKey(f))) {
     seen.add(dedupKey(f));
-    createdTickets.push(await rpc('tickets.create', { ...pick(f, ['ruleId', 'severity', 'category', 'selector', 'rect', 'description', 'expected', 'actual']), tabId: tab.tabId, url: tab.url || '', pathname, viewport, reportedBy: args.agentId || f.category || 'qa-auditor' }));
+    createdTickets.push(await rpc('tickets.create', { ...pick(f, TICKET_FIELDS), tabId: tab.tabId, url: tab.url || '', pathname, viewport, reportedBy: args.agentId || f.category || 'qa-auditor' }));
   }
-  await refreshPins(rpc, [tab.tabId], st);
+  await refreshPins(rpc, [tab.tabId], { cursors });
   return { tabId: tab.tabId, pathname, viewport, createdTickets, findingsCount: findings.length, untrustedPageData: true };
 }
 
-async function markFixedTool(rpc, args) {
+async function markFixedTool(rpc, args, cursors) {
   const tickets = await rpc('tickets.markFixed', { ticketIds: args.ticketIds ?? args.ids ?? args.id, devAgentId: args.devAgentId ?? args.agentId, summary: args.summary });
+  if (args.autoVerify !== false) for (const tid of new Set(tickets.filter((t) => t.ruleId && t.ruleId !== 'manual' && t.tabId != null).map((t) => t.tabId)))
+    await rpc('tab.command', { tabId: tid, command: { action: 'get_console_network', clear: true } }).catch(() => {});
   const waitMs = args.waitForHmrMs === undefined ? 800 : Math.max(0, Number(args.waitForHmrMs) || 0);
   if (waitMs > 0) await sleep(waitMs);
-  const st = await rpc('session.status', {}), byId = new Map(st.tabs.map((t) => [t.tabId, t]));
-  const tabIds = [...new Set(tickets.map((t) => t.tabId).filter((id) => byId.has(id)))];
-  for (const tid of tabIds) await moveCursorCmd(rpc, tid, { agentId: args.verifierAgentId || 'layout', role: 'layout' }, 'layout', 'Re-verificando');
+  const st = await rpc('session.status', {}), byId = new Map(st.tabs.map((t) => [t.tabId, t])), activeVp = new Map(st.tabs.map((t) => [t.tabId, t.viewport])), tabIds = [...new Set(tickets.map((t) => t.tabId).filter((id) => byId.has(id)))];
+  for (const tid of tabIds) await moveCursorCmd(rpc, tid, { agentId: args.verifierAgentId || 'layout', role: 'layout' }, 'layout', 'Re-verificando', cursors);
   const verifications = [], groups = new Map();
   if (args.autoVerify !== false) {
     for (const t of tickets) if (t.ruleId && t.ruleId !== 'manual' && byId.has(t.tabId)) {
@@ -92,10 +93,12 @@ async function markFixedTool(rpc, args) {
       (groups.get(k) || groups.set(k, []).get(k)).push(t);
     }
     for (const group of groups.values()) {
-      const tab = byId.get(group[0].tabId), vp = group[0].viewport;
-      if (vp?.width > 0 && (tab.viewport?.width !== vp.width || tab.viewport?.height !== vp.height))
-        await withMutationLock(rpc, { tabId: tab.tabId, agentId: args.verifierAgentId || 'responsive', role: 'responsive' }, 'viewport', 'responsive', 'Re-verificando', { action: 'set_viewport', width: vp.width, height: vp.height, mobile: vp.width <= 480 });
-      const audit = await rpc('tab.command', { tabId: tab.tabId, command: { action: 'run_audit', ...(vp ? { viewport: vp } : {}) } });
+      const tid = group[0].tabId, vp = group[0].viewport, cur = activeVp.get(tid), h = vp?.height || cur?.height || 900;
+      if (vp?.width > 0 && (cur?.width !== vp.width || cur?.height !== h)) {
+        await withMutationLock(rpc, { tabId: tid, agentId: args.verifierAgentId || 'responsive', role: 'responsive' }, 'viewport', 'responsive', 'Re-verificando', { action: 'set_viewport', width: vp.width, height: h, mobile: vp.width <= 480 }, cursors);
+        activeVp.set(tid, { width: vp.width, height: h });
+      }
+      const audit = await rpc('tab.command', { tabId: tid, command: { action: 'run_audit', ...(vp ? { viewport: vp } : {}) } });
       const findings = Array.isArray(audit?.findings) ? audit.findings : [];
       for (const t of group) {
         if (audit?.pathname && t.pathname && audit.pathname !== t.pathname) continue;
@@ -107,22 +110,23 @@ async function markFixedTool(rpc, args) {
       }
     }
   }
-  await refreshPins(rpc, tabIds, st);
+  await refreshPins(rpc, tabIds, { vpMap: activeVp, cursors });
   return { tickets, verifications, untrustedPageData: true };
 }
 
 function buildHandlers(ensureBus) {
-  const call = async (action, params) => (await ensureBus()).rpc(action, params);
-  const mut = (scope, role, action, keys, statusFn, extra) => (a) => withMutationLock(call, a, scope, role, statusFn(a), { action, ...pick(a, keys), ...(extra ? extra(a) : {}) });
+  const cursors = new Map(), call = async (action, params) => (await ensureBus()).rpc(action, params);
+  const mut = (scope, role, action, keys, statusFn, extra) => (a) => withMutationLock(call, a, scope, role, statusFn(a), { action, ...pick(a, keys), ...(extra ? extra(a) : {}) }, cursors);
   return {
     swarm_session_status: (a) => call('session.status', { tabId: a.tabId }),
     swarm_select_tab: (a) => call('tabs.select', { tabId: a.tabId }),
     swarm_spawn_cursors: async (a) => {
-      const st = await call('session.status', {}), tab = tabOf(st, a.tabId), src = a.cursors?.length ? a.cursors : (a.roles?.length ? a.roles : Object.values(DEFAULT_ROLES));
-      const cursors = src.map((c, i) => { const r = resolveRole(c); return { id: c?.id ?? r.id, label: c?.label ?? r.label, color: c?.color ?? r.color, x: c?.x ?? 40 + i * 32, y: c?.y ?? 40, status: c?.status ?? 'ready', ...pick(c, ['selector', 'box']) }; });
-      return { tabId: tab?.tabId ?? a.tabId, spawned: cursors, result: await call('tab.command', { tabId: tab?.tabId ?? a.tabId, command: { action: 'spawn_cursors', clear: Boolean(a.clear), cursors } }) };
+      const st = await call('session.status', {}), tab = tabOf(st, a.tabId), tid = tab?.tabId ?? a.tabId, src = a.cursors?.length ? a.cursors : (a.roles?.length ? a.roles : Object.values(DEFAULT_ROLES));
+      const list = src.map((c, i) => { const r = resolveRole(c); return { id: c?.id ?? r.id, label: c?.label ?? r.label, color: c?.color ?? r.color, x: c?.x ?? 40 + i * 32, y: c?.y ?? 40, status: c?.status ?? 'ready', ...pick(c, ['selector', 'box']) }; });
+      if (a.clear && tid != null) cursors.delete(tid); list.forEach((c) => trackCursor(cursors, tid, c.id));
+      return { tabId: tid, spawned: list, result: await call('tab.command', { tabId: tid, command: { action: 'spawn_cursors', clear: Boolean(a.clear), cursors: list } }) };
     },
-    swarm_move_cursor: (a) => moveCursorCmd(call, a.tabId, a, 'layout'),
+    swarm_move_cursor: async (a) => moveCursorCmd(call, a.tabId ?? (await call('session.status', {})).selectedTabId, a, 'layout', undefined, cursors),
     swarm_acquire_lock: (a) => call('lock.acquire', pick(a, ['agentId', 'tabId', 'scope', 'ttlMs'])),
     swarm_release_lock: (a) => call('lock.release', pick(a, ['agentId', 'tabId'])),
     swarm_set_viewport: mut('viewport', 'responsive', 'set_viewport', ['width', 'height', 'deviceScaleFactor'], (a) => `Viewport ${a.width}x${a.height}`, (a) => ({ mobile: a.mobile ?? a.width <= 480 })),
@@ -130,23 +134,21 @@ function buildHandlers(ensureBus) {
     swarm_fill: mut('interaction', 'interactive', 'fill', ['selector', 'value', 'clear'], () => 'Fill'),
     swarm_press_key: mut('interaction', 'interactive', 'press_key', ['key', 'selector', 'modifiers'], (a) => `Key ${a.key}`),
     swarm_navigate: mut('interaction', 'interactive', 'navigate', ['url'], () => 'Navigate'),
-    swarm_run_dom_audit: (a) => runDomAuditTool(call, a),
+    swarm_run_dom_audit: (a) => runDomAuditTool(call, a, cursors),
     swarm_report_finding: async (a) => {
       const st = await call('session.status', {}), tab = tabOf(st, a.tabId), tabId = a.tabId ?? tab?.tabId ?? null, path = a.pathname ?? (a.url ? undefined : tab?.pathname ?? '/');
-      const ticket = await call('tickets.create', { ...a, tabId, url: a.url ?? tab?.url ?? '', ...(path !== undefined ? { pathname: path } : {}), viewport: a.viewport ?? tab?.viewport ?? null, ruleId: a.ruleId || 'manual', reportedBy: a.reportedBy ?? a.agentId ?? 'qa-agent' });
-      if (tab) await refreshPins(call, [tab.tabId], st); return ticket;
+      const ticket = await call('tickets.create', { ...pick(a, TICKET_FIELDS), tabId, url: a.url ?? tab?.url ?? '', ...(path !== undefined ? { pathname: path } : {}), viewport: a.viewport ?? tab?.viewport ?? null, ruleId: a.ruleId || 'manual', reportedBy: a.reportedBy ?? a.agentId ?? 'qa-agent' });
+      if (tab) await refreshPins(call, [tab.tabId], { cursors }); return ticket;
     },
     swarm_list_findings: async (a) => { const tickets = await call('tickets.list', pick(a, ['status', 'tabId', 'pathname', 'viewportWidth'])); return { tickets, count: tickets.length, untrustedPageData: true }; },
-    swarm_claim_findings: async (a) => { const tickets = await call('tickets.claim', { ticketIds: a.ticketIds ?? a.ids ?? a.id, devAgentId: a.devAgentId ?? a.agentId }); await refreshPins(call, tickets.map((t) => t.tabId)); return { tickets }; },
-    swarm_mark_fixed: (a) => markFixedTool(call, a),
-    swarm_verify_finding: async (a) => { const ticket = await call('tickets.verify', { id: a.id ?? a.ticketId, agentId: a.agentId ?? 'qa-agent', passed: a.passed, evidence: a.evidence }); await refreshPins(call, [ticket.tabId]); return ticket; },
+    swarm_claim_findings: async (a) => { const tickets = await call('tickets.claim', { ticketIds: a.ticketIds ?? a.ids ?? a.id, devAgentId: a.devAgentId ?? a.agentId }); await refreshPins(call, tickets.map((t) => t.tabId), { cursors }); return { tickets }; },
+    swarm_mark_fixed: (a) => markFixedTool(call, a, cursors),
+    swarm_verify_finding: async (a) => { const ticket = await call('tickets.verify', { id: a.id ?? a.ticketId, agentId: a.agentId ?? 'qa-agent', passed: a.passed, evidence: a.evidence }); await refreshPins(call, [ticket.tabId], { cursors }); return ticket; },
     swarm_await_event: (a) => call('events.await', { sinceSeq: a.sinceSeq ?? 0, timeoutMs: a.timeoutMs ?? 15000 })
   };
 }
 
-/**
- * Creates a stdio JSON-RPC 2.0 MCP server wired to the local Swarm QA bus.
- */
+/** Creates a stdio JSON-RPC 2.0 MCP server wired to the local Swarm QA bus. */
 export function createMcpServer({ registryPath, busClient, stdin = process.stdin, stdout = process.stdout } = {}) {
   let busState = null, busPromise = null, buf = Buffer.alloc(0);
   const inflight = new Set(), ensureBus = () => (busPromise ??= resolveBus(registryPath, busClient).then((s) => (busState = s).client)), handlers = buildHandlers(ensureBus);
@@ -171,14 +173,14 @@ export function createMcpServer({ registryPath, busClient, stdin = process.stdin
     while (buf.length > 0) {
       while (buf.length && (buf[0] === 0x0a || buf[0] === 0x0d)) buf = buf.subarray(1);
       if (!buf.length) break;
-      const cl = /^content-length:/i.test(buf.subarray(0, 16).toString('utf8'));
-      const sepIdx = cl ? (buf.indexOf('\r\n\r\n') + 1 || buf.indexOf('\n\n') + 1) - 1 : buf.indexOf(0x0a);
-      if (sepIdx === -1) break;
-      if (cl) {
-        const sep = buf[sepIdx] === 0x0d ? 4 : 2, len = Number(/content-length:\s*(\d+)/i.exec(buf.subarray(0, sepIdx).toString('utf8'))?.[1] || 0);
-        if (buf.length < sepIdx + sep + len) break;
+      const nl = buf.indexOf(0x0a), cr = buf.indexOf('\r\n\r\n'), lf = buf.indexOf('\n\n'), sepIdx = cr !== -1 && (lf === -1 || cr < lf) ? cr : lf;
+      if (/^[a-z0-9-]+:/i.test(buf.subarray(0, nl !== -1 ? nl : buf.length).toString('utf8'))) {
+        if (sepIdx === -1) break;
+        const sep = buf[sepIdx] === 0x0d ? 4 : 2, m = /^content-length:\s*(\d+)/im.exec(buf.subarray(0, sepIdx).toString('utf8'));
+        if (!m) { buf = buf.subarray(sepIdx + sep); send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }, true); continue; }
+        const len = Number(m[1]); if (buf.length < sepIdx + sep + len) break;
         dispatch(buf.subarray(sepIdx + sep, sepIdx + sep + len).toString('utf8'), true); buf = buf.subarray(sepIdx + sep + len);
-      } else { const line = buf.subarray(0, sepIdx).toString('utf8').trim(); buf = buf.subarray(sepIdx + 1); if (line) dispatch(line, false); }
+      } else { if (nl === -1) break; const line = buf.subarray(0, nl).toString('utf8').trim(); buf = buf.subarray(nl + 1); if (line) dispatch(line, false); }
     }
   };
   stdin.on('data', onData);

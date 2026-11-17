@@ -1,4 +1,4 @@
-const CTRL_RE = /[\u0000-\u001F\u007F-\u009F]/g;
+const CTRL_RE = /[\u0000-\u001F\u007F-\u009F\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g;
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 /**
@@ -32,7 +32,10 @@ export function MAIN_WORLD_PROBE_SOURCE(nonce) {
   if (typeof window.fetch === 'function') {
     const origFetch = window.fetch;
     window.fetch = function (input, init) {
-      const url = cut(typeof input === 'string' ? input : (input?.url ?? String(input ?? '')));
+      const rawUrl = typeof input === 'string' ? input : (input?.url ?? String(input ?? ''));
+      let fullUrl = rawUrl;
+      try { fullUrl = new URL(rawUrl, location.href).href; } catch {}
+      const url = cut(fullUrl);
       const method = cut(init?.method || input?.method || 'GET').toUpperCase();
       return origFetch.apply(this, arguments).then(
         (res) => { if (res && res.status >= 400) emit('fetch', { url, method, status: res.status, ok: false }); return res; },

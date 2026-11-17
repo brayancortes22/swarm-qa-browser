@@ -7,6 +7,14 @@ export const DEFAULT_EXTENSION_ID = 'jgfhckehijkedmcellcjglbnibgccifg';
 export const DEFAULT_PORT = 47921;
 
 const LOCAL_HTTP_ORIGIN_RE = /^http:\/\/(localhost|127\.0\.0\.1)(?::(\d{1,5}))?$/;
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost', '[::1]']);
+
+/**
+ * Checks whether a host string is an explicit loopback address.
+ */
+export function isLoopbackHost(host) {
+  return typeof host === 'string' && LOOPBACK_HOSTS.has(host.toLowerCase());
+}
 
 /**
  * Resolves the active bus registry path from SWARM_REGISTRY_PATH or the user home directory.

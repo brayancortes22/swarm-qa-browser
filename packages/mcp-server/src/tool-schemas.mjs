@@ -1,6 +1,7 @@
 const TAB = { type: ['string', 'number'], description: 'Target browser tab ID (defaults to selected tab)' };
 const AGENT = { type: 'string', description: 'Agent or role ID (e.g. layout, responsive, interactive, dev-1)' };
 const VP = { type: 'object', properties: { width: { type: 'number' }, height: { type: 'number' } } };
+const RECT = { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, left: { type: 'number' }, top: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' } } };
 const IDS = { type: 'array', items: { type: 'string' }, description: 'List of ticket IDs' };
 const RO = Object.freeze({ readOnlyHint: true, destructiveHint: false, idempotentHint: true });
 const IDEMP = Object.freeze({ readOnlyHint: false, destructiveHint: false, idempotentHint: true });
@@ -62,7 +63,7 @@ export const SWARM_TOOLS = Object.freeze([
     tabId: TAB, agentId: AGENT, ruleId: { type: 'string' }, severity: { type: 'string' },
     category: { type: 'string' }, selector: { type: 'string' }, pathname: { type: 'string' },
     url: { type: 'string' }, viewport: VP, description: { type: 'string' },
-    expected: { type: 'string' }, actual: { type: 'string' }, rect: { type: 'object' }, reportedBy: { type: 'string' }
+    expected: { type: 'string' }, actual: { type: 'string' }, rect: RECT, reportedBy: { type: 'string' }
   }, ['description'], ACT),
   tool('swarm_list_findings', 'List QA finding tickets filtered by status, tabId, pathname, or viewportWidth.', {
     tabId: TAB, status: { description: 'Status string or array of statuses' },

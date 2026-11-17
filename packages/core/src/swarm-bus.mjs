@@ -3,15 +3,15 @@ import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { DEFAULT_ROLES } from './roles.mjs';
 import { LockManager } from './lock-manager.mjs';
-import { DEFAULT_EXTENSION_ID, DEFAULT_PORT, acquireRegistryLock, clearBusRegistryIfOwned, createToken, getRegistryPath, isAllowedOrigin } from './session-auth.mjs';
+import { DEFAULT_EXTENSION_ID, DEFAULT_PORT, acquireRegistryLock, clearBusRegistryIfOwned, createToken, getRegistryPath, isAllowedOrigin, isLoopbackHost } from './session-auth.mjs';
 import { TicketStore, sanitizePageText } from './ticket-store.mjs';
 
-const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
 const MUTATING = new Set(['set_viewport', 'click', 'fill', 'press_key', 'navigate']);
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const MAX_EVENTS = 250, MAX_BODY_BYTES = 1024 * 1024;
 const httpError = (msg, statusCode = 400, code = 'RPC_ERROR') => Object.assign(new Error(msg), { statusCode, code });
 const pickIds = (p) => p.ticketIds ?? p.ids ?? p.id ?? p.ticketId;
+const parseReqUrl = (raw) => { try { return new URL(raw || '/', 'http://127.0.0.1'); } catch { return null; } };
 
 function safeTokenEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string' || !a || !b) return false;
@@ -55,16 +55,18 @@ function listenLoopback(server, port, host, autoFallbackPort) {
  * Starts the local loopback WebSocket + HTTP swarm QA bus with Origin and bearer token security.
  */
 export async function startSwarmBus({ port, host = '127.0.0.1', registryPath, extensionId = DEFAULT_EXTENSION_ID, autoFallbackPort = true } = {}) {
-  if (typeof host !== 'string' || !LOOPBACK.has(host)) throw new Error(`Refusing non-loopback host "${host}"`);
+  if (typeof host !== 'string' || !isLoopbackHost(host)) throw new Error(`Refusing non-loopback host "${host}"`);
+  const bindHost = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
   const reqPort = Number(port === undefined ? (process.env.SWARM_BUS_PORT ?? DEFAULT_PORT) : port);
   if (!Number.isInteger(reqPort) || reqPort < 0 || reqPort > 65535) throw new Error(`Invalid bus port "${port}"`);
   const regPath = registryPath || getRegistryPath(), token = createToken();
+  const extOrigin = typeof extensionId === 'string' && extensionId && !extensionId.includes('/') ? `chrome-extension://${extensionId}` : null;
   const store = new TicketStore(), locks = new LockManager(), tabs = new Map(), events = [], waiters = new Set(), pending = new Map();
   let seq = 0, selectedTabId = null, boundPort = reqPort, closing = null;
   const publicTab = ({ ws: _ws, ...rest }) => ({ ...rest });
   const rejectPending = (pred, errMsg) => { for (const [id, e] of [...pending.entries()]) if (pred(e)) { pending.delete(id); clearTimeout(e.timer); e.reject(new Error(errMsg(e))); } };
   function pushEvent(type, data = {}) {
-    const event = { seq: ++seq, type, ts: new Date().toISOString(), ...data };
+    const event = { ...data, seq: ++seq, type, ts: new Date().toISOString() };
     events.push(event);
     if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS);
     for (const w of [...waiters]) if (seq > w.sinceSeq) { waiters.delete(w); clearTimeout(w.timer); w.resolve({ seq, events: events.filter((e) => e.seq > w.sinceSeq), timedOut: false }); }
@@ -93,7 +95,7 @@ export async function startSwarmBus({ port, host = '127.0.0.1', registryPath, ex
   }
 
   const rpc = {
-    'session.status': (p) => ({ ok: true, port: boundPort, host, extensionId, seq, selectedTabId, tabs: Array.from(tabs.values(), publicTab), locks: locks.status(p.tabId), roles: DEFAULT_ROLES, ticketsSummary: store.list().reduce((a, t) => ((a.total += 1), Object.hasOwn(a, t.status) && (a[t.status] += 1), a), { total: 0, open: 0, claimed: 0, awaiting_reverify: 0, verified: 0, reopened: 0, escalated: 0 }) }),
+    'session.status': (p) => ({ ok: true, port: boundPort, host: bindHost, extensionId, seq, selectedTabId, tabs: Array.from(tabs.values(), publicTab), locks: locks.status(p.tabId), roles: DEFAULT_ROLES, ticketsSummary: store.list().reduce((a, t) => ((a.total += 1), Object.hasOwn(a, t.status) && (a[t.status] += 1), a), { total: 0, open: 0, claimed: 0, awaiting_reverify: 0, verified: 0, reopened: 0, escalated: 0 }) }),
     'tabs.select': (p) => { if (!tabs.has(p.tabId)) throw httpError(`Tab ${p.tabId} is not connected`, 404, 'TAB_NOT_CONNECTED'); selectedTabId = p.tabId; pushEvent('tab_selected', { tabId: selectedTabId }); return { selectedTabId, tab: publicTab(tabs.get(selectedTabId)) }; },
     'tickets.list': (p) => store.list(p),
     'tickets.create': (p) => { const t = store.create(p); pushEvent('ticket_created', { ticket: t }); return t; },
@@ -104,16 +106,19 @@ export async function startSwarmBus({ port, host = '127.0.0.1', registryPath, ex
     'lock.release': (p) => { const r = locks.release({ ...p, tabId: p.tabId ?? selectedTabId }); pushEvent('lock_released', r); return r; },
     'tab.command': (p) => {
       const targetTabId = p.tabId ?? selectedTabId, cmd = p.command ?? p, act = cmd?.action ?? cmd?.type;
-      if (p.requireLock) locks.assertCanMutate({ agentId: p.agentId, tabId: targetTabId });
-      else if (MUTATING.has(act)) { const cur = locks.status(targetTabId); if (cur.locked && cur.agentId !== p.agentId) throw httpError(`Tab ${targetTabId} is locked by "${cur.agentId}"`, 409, 'LOCK_HELD'); }
+      if (p.requireLock || MUTATING.has(act)) try { locks.assertCanMutate({ agentId: p.agentId, tabId: targetTabId }); } catch (err) {
+        const badTab = targetTabId == null || targetTabId === '';
+        throw httpError(err.message, badTab ? 400 : 409, badTab ? 'RPC_ERROR' : 'LOCK_HELD');
+      }
       return dispatchToTab(targetTabId, cmd, p.timeoutMs);
     },
     'events.await': (p) => waitForEvent(p.sinceSeq ?? 0, p.timeoutMs ?? 15000)
   };
 
   const server = createServer(async (req, res) => {
-    const origin = req.headers.origin, path = new URL(req.url || '/', 'http://127.0.0.1').pathname;
-    if (!isAllowedOrigin(origin, extensionId) || (path === '/pair' && origin && origin !== `chrome-extension://${extensionId}`)) return sendJson(res, 403, { ok: false, error: 'Forbidden origin' }, origin, false);
+    const origin = req.headers.origin, u = parseReqUrl(req.url), path = u?.pathname;
+    if (!u) return sendJson(res, 400, { ok: false, error: 'Malformed request URL', code: 'INVALID_URL' }, origin, false);
+    if (!isAllowedOrigin(origin, extensionId) || (path === '/pair' && (!extOrigin || origin !== extOrigin))) return sendJson(res, 403, { ok: false, error: 'Forbidden origin' }, origin, false);
     if (req.method === 'OPTIONS') return sendJson(res, 204, {}, origin, true);
     if (req.method === 'GET' && path === '/health') return sendJson(res, 200, { ok: true, port: boundPort, extensionId, tabsCount: tabs.size, seq }, origin, true);
     if (req.method === 'POST' && path === '/pair') return sendJson(res, 200, { port: boundPort, token, extensionId }, origin, true);
@@ -130,7 +135,9 @@ export async function startSwarmBus({ port, host = '127.0.0.1', registryPath, ex
 
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
-    const u = new URL(req.url || '/', 'http://127.0.0.1'), deny = (s, r, m) => socket.end(`HTTP/1.1 ${s} ${r}\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ error: m })}`);
+    const deny = (s, r, m) => socket.end(`HTTP/1.1 ${s} ${r}\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ error: m })}`);
+    const u = parseReqUrl(req.url);
+    if (!u) return deny(400, 'Bad Request', 'Malformed request URL');
     if (u.pathname !== '/') return deny(404, 'Not Found', 'Invalid WebSocket path');
     if (!isAllowedOrigin(req.headers.origin, extensionId)) return deny(403, 'Forbidden', 'Forbidden origin');
     const cand = (typeof req.headers['x-swarm-token'] === 'string' && req.headers['x-swarm-token']) || u.searchParams.get('token') || '';
@@ -170,9 +177,9 @@ export async function startSwarmBus({ port, host = '127.0.0.1', registryPath, ex
     });
   });
 
-  boundPort = await listenLoopback(server, reqPort, host, autoFallbackPort);
-  const hostFmt = host.includes(':') ? `[${host}]` : host;
-  try { acquireRegistryLock({ pid: process.pid, port: boundPort, host, token, extensionId, startedAt: new Date().toISOString() }, regPath); }
+  boundPort = await listenLoopback(server, reqPort, bindHost, autoFallbackPort);
+  const hostFmt = bindHost.includes(':') ? `[${bindHost}]` : bindHost;
+  try { acquireRegistryLock({ pid: process.pid, port: boundPort, host: bindHost, token, extensionId, startedAt: new Date().toISOString() }, regPath); }
   catch (err) { wss.close(); server.close(); server.closeAllConnections?.(); throw err; }
 
   const close = () => (closing ??= (async () => {
@@ -183,5 +190,5 @@ export async function startSwarmBus({ port, host = '127.0.0.1', registryPath, ex
     server.closeAllConnections?.(); await new Promise((r) => server.close(r));
     clearBusRegistryIfOwned(process.pid, regPath);
   })());
-  return { port: boundPort, host, token, extensionId, registryPath: regPath, url: `http://${hostFmt}:${boundPort}`, wsUrl: `ws://${hostFmt}:${boundPort}`, store, locks, dispatchToTab, waitForEvent, close };
+  return { port: boundPort, host: bindHost, token, extensionId, registryPath: regPath, url: `http://${hostFmt}:${boundPort}`, wsUrl: `ws://${hostFmt}:${boundPort}`, store, locks, dispatchToTab, waitForEvent, close };
 }

@@ -1,4 +1,6 @@
 const $ = (id) => document.getElementById(id);
+const ENABLE_TEXT = 'Habilitar permisos y arrancar enjambre';
+const ACTIVE_TEXT = 'Sesión activa en esta pestaña';
 const els = {
   busDot: $('busDot'), busText: $('busText'), portInput: $('portInput'), savePortBtn: $('savePortBtn'),
   tabUrl: $('tabUrl'), tabViewport: $('tabViewport'), probeCheck: $('probeCheck'), consentCheck: $('consentCheck'),
@@ -17,7 +19,7 @@ function parseTarget(rawUrl) {
   try {
     const u = new URL(String(rawUrl || ''));
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
-    const isLocal = u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+    const isLocal = u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1');
     return { url: u, isLocal, originPattern: `${u.protocol}//${u.hostname}/*` };
   } catch {
     return null;
@@ -42,7 +44,8 @@ function renderTab(tabInfo, sessionTab) {
     els.tabViewport.textContent = sessionActive ? 'Activo' : 'Sin sesión';
   }
   if (sessionActive) els.consentCheck.checked = true;
-  els.enableBtn.disabled = !target || !els.consentCheck.checked;
+  els.enableBtn.disabled = sessionActive || !target || !els.consentCheck.checked;
+  els.enableBtn.textContent = sessionActive ? ACTIVE_TEXT : ENABLE_TEXT;
   els.detachBtn.disabled = !sessionActive;
   els.exportBtn.disabled = !sessionActive;
 }
@@ -62,7 +65,7 @@ async function refreshStatus() {
 
 els.consentCheck.addEventListener('change', () => {
   const target = parseTarget(activeTab?.url);
-  els.enableBtn.disabled = !target || !els.consentCheck.checked;
+  els.enableBtn.disabled = sessionActive || !target || !els.consentCheck.checked;
 });
 
 els.savePortBtn.addEventListener('click', async () => {
@@ -113,9 +116,9 @@ els.enableBtn.addEventListener('click', async () => {
     setFeedback(res.busConnected ? 'Enjambre activo y conectado al Bus local.' : `Sesión lista. Inicia el Bus en 127.0.0.1:${els.portInput.value}.`, 'ok');
   } catch (err) {
     setFeedback(err?.message || String(err), 'err');
-    await refreshStatus();
-  } finally {
-    els.enableBtn.textContent = 'Habilitar permisos y arrancar enjambre';
+    await refreshStatus().catch(() => {
+      els.enableBtn.textContent = sessionActive ? ACTIVE_TEXT : ENABLE_TEXT;
+    });
   }
 });
 

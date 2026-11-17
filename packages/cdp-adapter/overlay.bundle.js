@@ -5,7 +5,7 @@
   __modules["./cursor-layer.js"] = (() => {
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const COLOR_RE = /^#[0-9a-fA-F]{3,8}$|^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*[\d.]+)?\s*\)$/;
-const CTRL_RE = /[\u0000-\u001F\u007F-\u009F]/g;
+const CTRL_RE = /[\u0000-\u001F\u007F-\u009F\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g;
 
 const STYLES = `
 .swarm-cursor-layer{pointer-events:none;position:fixed;inset:0;z-index:2;overflow:hidden}
@@ -21,6 +21,7 @@ const STYLES = `
 const clean = (v, max = 64) => String(v ?? '').replace(/[\r\n\t]+/g, ' ').replace(CTRL_RE, '').trim().slice(0, max);
 const safeColor = (c) => (COLOR_RE.test(String(c || '').trim()) ? String(c).trim() : '#0D99FF');
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+const hasNum = (v) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) && Number.isFinite(Number(v));
 
 function makeSvg(doc) {
   const mkNs = (tag) => (doc.createElementNS ? doc.createElementNS(SVG_NS, tag) : doc.createElement(tag));
@@ -70,7 +71,7 @@ function createCursorLayer(shadowRoot) {
     el.appendChild(svg);
     el.appendChild(pill);
     layer.appendChild(el);
-    return { el, path, dot, labelEl, statusEl, boxEl: null, dimsEl: null };
+    return { el, path, dot, labelEl, statusEl, boxEl: null, dimsEl: null, x: 0, y: 0, color: '', label: '' };
   }
 
   function syncBox(entry, box, color) {
@@ -103,14 +104,19 @@ function createCursorLayer(shadowRoot) {
     if (!key) return;
     let entry = cursors.get(key);
     if (!entry) { entry = createEntry(key); cursors.set(key, entry); }
-    const col = safeColor(color);
+    const col = color !== undefined ? safeColor(color) : (entry.color || '#0D99FF');
+    entry.color = col;
     entry.path.setAttribute('fill', col);
     entry.dot.style.background = col;
-    entry.labelEl.textContent = clean(label || key, 48);
+    const lbl = label !== undefined ? clean(label || key, 48) : (entry.label || key);
+    entry.label = lbl;
+    entry.labelEl.textContent = lbl;
     const st = clean(status, 40);
     entry.statusEl.textContent = st;
     entry.statusEl.style.display = st ? 'inline-block' : 'none';
-    entry.el.style.transform = `translate3d(${num(x)}px, ${num(y)}px, 0)`;
+    entry.x = hasNum(x) ? Number(x) : (entry.x ?? 0);
+    entry.y = hasNum(y) ? Number(y) : (entry.y ?? 0);
+    entry.el.style.transform = `translate3d(${entry.x}px, ${entry.y}px, 0)`;
     syncBox(entry, box, col);
   }
 
@@ -137,7 +143,7 @@ function createCursorLayer(shadowRoot) {
   })();
 
   __modules["./issue-pins.js"] = (() => {
-const CTRL_RE = /[\u0000-\u001F\u007F-\u009F]/g;
+const CTRL_RE = /[\u0000-\u001F\u007F-\u009F\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g;
 const sevOf = (s) => (/^(P1|critical)$/i.test(s) ? ['P1', '#F24822', '#ffffff'] : /^(P2|high)$/i.test(s) ? ['P2', '#FFC700', '#0a0b0f'] : ['P3', '#0D99FF', '#ffffff']);
 const STATUS = {
   open: ['●', '#f4f4f5', 'Abierto'], claimed: ['◐', '#a78bfa', 'En curso'],
@@ -159,6 +165,7 @@ const STYLES = `.swarm-pins-layer{pointer-events:none;position:fixed;inset:0;z-i
 .swarm-hud.is-collapsed .swarm-hud-stats,.swarm-hud.is-collapsed [data-action="reaudit"],.swarm-hud.is-collapsed [data-action="clear"]{display:none}`;
 const txt = (v, max = 280) => String(v ?? '').replace(/[\r\n\t]+/g, ' ').replace(CTRL_RE, '').slice(0, max);
 const clamp = (n, min, max) => Math.max(min, Math.min(max, Number.isFinite(Number(n)) ? Number(n) : min));
+const posNum = (v) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) && Number.isFinite(Number(v)) && Number(v) > 0;
 const addAll = (parent, nodes) => nodes.forEach((n) => parent.appendChild(n));
 
 /**
@@ -176,7 +183,8 @@ function createIssuePins(shadowRoot, callbacks = {}) {
     if (attrs) Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
     return el;
   };
-  const style = mk('style', '', STYLES);
+  const style = mk('style');
+  style.textContent = STYLES;
   const layer = mk('div', 'swarm-pins-layer');
   const hud = mk('div', 'swarm-hud');
   const statsWrap = mk('div', 'swarm-hud-stats');
@@ -238,11 +246,19 @@ function createIssuePins(shadowRoot, callbacks = {}) {
     popEl = pop;
   }
 
-  function setTickets(tickets = [], currentPathname) {
+  function setTickets(tickets = [], currentPathname, currentViewportWidth) {
     if (layer.replaceChildren) layer.replaceChildren(); else while (layer.firstChild) layer.removeChild(layer.firstChild);
     popEl = null;
     const hasPath = typeof currentPathname === 'string' && currentPathname.length > 0;
-    const visible = (Array.isArray(tickets) ? tickets : []).filter((t) => !hasPath || !t?.pathname || t.pathname === currentPathname);
+    const hasVp = posNum(currentViewportWidth), curW = hasVp ? Number(currentViewportWidth) : 0;
+    const visible = (Array.isArray(tickets) ? tickets : []).filter((t) => {
+      if (hasPath && t?.pathname && t.pathname !== currentPathname) return false;
+      if (hasVp && posNum(t?.viewport?.width)) {
+        const w = Number(t.viewport.width);
+        return (w <= 480) === (curW <= 480) || Math.abs(w - curW) <= 160;
+      }
+      return true;
+    });
     const placed = [], pinEls = [];
     visible.forEach((ticket, i) => {
       const tid = txt(ticket.id ?? `idx-${i}`, 48);
@@ -284,7 +300,7 @@ function createIssuePins(shadowRoot, callbacks = {}) {
   })();
 
   __modules["./network-console.js"] = (() => {
-const CTRL_RE = /[\u0000-\u001F\u007F-\u009F]/g;
+const CTRL_RE = /[\u0000-\u001F\u007F-\u009F\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g;
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 /**
@@ -318,7 +334,10 @@ function MAIN_WORLD_PROBE_SOURCE(nonce) {
   if (typeof window.fetch === 'function') {
     const origFetch = window.fetch;
     window.fetch = function (input, init) {
-      const url = cut(typeof input === 'string' ? input : (input?.url ?? String(input ?? '')));
+      const rawUrl = typeof input === 'string' ? input : (input?.url ?? String(input ?? ''));
+      let fullUrl = rawUrl;
+      try { fullUrl = new URL(rawUrl, location.href).href; } catch {}
+      const url = cut(fullUrl);
       const method = cut(init?.method || input?.method || 'GET').toUpperCase();
       return origFetch.apply(this, arguments).then(
         (res) => { if (res && res.status >= 400) emit('fetch', { url, method, status: res.status, ok: false }); return res; },
@@ -393,14 +412,16 @@ function sanitizeText(value, maxLen = 280) {
 
 const isSensitiveElement = (el) => Boolean(el && tagOf(el) === 'input' && (inputType(el) === 'password' || inputType(el) === 'hidden'));
 
+const escCss = (val) => (globalThis.CSS?.escape ? globalThis.CSS.escape(String(val)) : String(val).replace(/[^a-zA-Z0-9_-]/g, '\\$&'));
+
 function buildSelector(el) {
   if (!el) return 'document';
   const parts = [];
   for (let cur = el, d = 0; cur && d < 4 && tagOf(cur) && !tagOf(cur).startsWith('#'); d += 1) {
-    if (cur.id) { parts.unshift(`#${cur.id}`); break; }
+    if (cur.id) { parts.unshift(`#${escCss(cur.id)}`); break; }
     let seg = tagOf(cur);
     const tid = attrOf(cur, 'data-testid');
-    if (tid) seg += `[data-testid="${tid}"]`;
+    if (tid) seg += `[data-testid="${escCss(tid)}"]`;
     else if (cur.parentElement?.children?.length > 1) {
       const same = Array.from(cur.parentElement.children).filter((c) => tagOf(c) === seg);
       if (same.length > 1) seg += `:nth-of-type(${same.indexOf(cur) + 1})`;
@@ -417,7 +438,7 @@ const getRect = (el) => {
 };
 
 function isVisible(el, win) {
-  for (let cur = el; cur && tagOf(cur); cur = cur.parentElement || cur.parentNode) {
+  for (let cur = el; cur && tagOf(cur) && !tagOf(cur).startsWith('#') && (cur.nodeType == null || cur.nodeType === 1); cur = cur.parentElement || cur.parentNode) {
     if (IGNORED_IDS.has(cur.id)) return false;
     const stAttr = String(attrOf(cur, 'style') || ''), s = cur.style || {};
     if (cur.hidden === true || (attrOf(cur, 'hidden') !== null && attrOf(cur, 'hidden') !== 'false')) return false;
@@ -493,8 +514,11 @@ function runDomAudit({ doc = globalThis.document, rootDocument, win = globalThis
     if (Number(root.scrollWidth) > Number(vp.width)) out.push(makeFinding('overflow-document', 'P1', 'overflow', 'html', getRect(root), `Page overflows viewport width (${vp.width}px)`, `scrollWidth <= ${vp.width}px`, `scrollWidth=${root.scrollWidth}px`));
     for (const el of vis) {
       if (el === root || el.clientWidth <= 0 || el.scrollWidth <= el.clientWidth + 2) continue;
-      const ox = (win?.getComputedStyle?.(el)?.overflowX ?? el.style?.overflowX ?? '').toLowerCase();
-      if (ox !== 'auto' && ox !== 'scroll') out.push(makeFinding('overflow-container', 'P2', 'overflow', buildSelector(el), getRect(el), 'Container overflows horizontally', `scrollWidth <= ${el.clientWidth + 2}px`, `scrollWidth=${el.scrollWidth}px, clientWidth=${el.clientWidth}px`));
+      const cs = win?.getComputedStyle?.(el);
+      const ox = String(cs?.overflowX ?? el.style?.overflowX ?? '').toLowerCase();
+      const to = String(cs?.textOverflow ?? el.style?.textOverflow ?? '').toLowerCase();
+      if (ox === 'auto' || ox === 'scroll' || ((ox === 'hidden' || ox === 'clip') && to === 'ellipsis')) continue;
+      out.push(makeFinding('overflow-container', 'P2', 'overflow', buildSelector(el), getRect(el), 'Container overflows horizontally', `scrollWidth <= ${el.clientWidth + 2}px`, `scrollWidth=${el.scrollWidth}px, clientWidth=${el.clientWidth}px`));
     }
   }
   if (active.has('overlap')) {
@@ -573,7 +597,7 @@ function resolveTarget(doc, data) {
   }
 }
 
-function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.window, nonce = '', onEvent, onAction } = {}) {
+function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.window, nonce = '', onEvent, onAction, clearConsoleOnRouteChange = false, clearOnRouteChange = false } = {}) {
   if (!doc) throw new Error('mountSwarmOverlay requires a document');
   doc.getElementById?.('__swarm_qa_overlay')?.remove?.();
 
@@ -607,7 +631,8 @@ function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.window,
     const next = getRoute();
     if (next === currentRoute) return;
     currentRoute = next;
-    issuePins.setTickets(cachedTickets, currentRoute);
+    if (clearConsoleOnRouteChange || clearOnRouteChange) consoleCollector.clear();
+    issuePins.setTickets(cachedTickets, currentRoute, win?.innerWidth);
     onEvent?.({ type: 'route_change', pathname: currentRoute });
   };
 
@@ -659,12 +684,15 @@ function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.window,
     };
     const consoleEntries = opts.consoleEntries ?? consoleCollector.getEntries();
     const findings = runDomAudit({ doc, win, checks: opts.checks, viewport: vp, consoleEntries });
+    if (opts.clearConsole) consoleCollector.clear();
     return { pathname: getRoute(), viewport: vp, findings };
   }
 
-  function setTickets(tickets = [], pathname) {
+  function setTickets(tickets = [], pathname, opts = {}) {
     cachedTickets = Array.isArray(tickets) ? tickets : [];
-    issuePins.setTickets(cachedTickets, pathname || getRoute());
+    const vpWidth = typeof opts === 'number' ? opts : opts?.viewportWidth;
+    if (opts?.clearConsole) consoleCollector.clear();
+    issuePins.setTickets(cachedTickets, pathname || getRoute(), vpWidth ?? win?.innerWidth);
   }
 
   function destroy() {
@@ -687,6 +715,7 @@ function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.window,
     removeCursor: (id) => cursors.removeCursor(id),
     runAudit,
     setTickets,
+    clearConsole: () => consoleCollector.clear(),
     updateSummary: (stats) => issuePins.updateSummary(stats),
     getRoute,
     probeSource: () => MAIN_WORLD_PROBE_SOURCE(nonce),

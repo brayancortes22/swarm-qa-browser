@@ -2,13 +2,14 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer as createNetServer } from 'node:net';
+import { request as httpRequest } from 'node:http';
+import { connect as netConnect, createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
 
 import { startSwarmBus } from '../packages/core/src/swarm-bus.mjs';
-import { DEFAULT_EXTENSION_ID, readBusRegistry } from '../packages/core/src/session-auth.mjs';
+import { DEFAULT_EXTENSION_ID, isLoopbackHost, readBusRegistry } from '../packages/core/src/session-auth.mjs';
 
 function makeTempRegistry(prefix = 'swarm-bus-test-') {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -48,7 +49,14 @@ async function rpc(bus, action, params = {}, headers = {}) {
 }
 
 describe('swarm-bus security & lifecycle', () => {
-  it('refuses non-loopback host bindings', async () => {
+  it('validates loopback hosts and refuses non-loopback host bindings', async () => {
+    for (const host of ['127.0.0.1', '::1', 'localhost', '[::1]']) {
+      assert.equal(isLoopbackHost(host), true);
+    }
+    for (const bad of ['0.0.0.0', '192.168.1.50', 'evil.example', '', null]) {
+      assert.equal(isLoopbackHost(bad), false);
+    }
+
     const tmp = makeTempRegistry();
     try {
       await assert.rejects(
@@ -64,7 +72,7 @@ describe('swarm-bus security & lifecycle', () => {
     }
   });
 
-  it('rejects disallowed Origins with 403 and invalid/missing tokens with 401 across HTTP and WS', async () => {
+  it('rejects disallowed Origins with 403, invalid/missing tokens with 401, and malformed URLs with 400 across HTTP and WS', async () => {
     const tmp = makeTempRegistry();
     let bus;
     try {
@@ -81,7 +89,16 @@ describe('swarm-bus security & lifecycle', () => {
       const healthEvil = await fetch(`${bus.url}/health`, { headers: { origin: 'https://evil.example' } });
       assert.equal(healthEvil.status, 403);
 
-      // /pair rejects arbitrary web origins (even localhost app) and allows pinned extension or local CLI
+      // /pair strictly requires chrome-extension://<extensionId> Origin (rejects missing, empty, null, localhost, evil)
+      const pairMissing = await fetch(`${bus.url}/pair`, { method: 'POST' });
+      assert.equal(pairMissing.status, 403);
+
+      const pairEmpty = await fetch(`${bus.url}/pair`, { method: 'POST', headers: { origin: '' } });
+      assert.equal(pairEmpty.status, 403);
+
+      const pairNull = await fetch(`${bus.url}/pair`, { method: 'POST', headers: { origin: 'null' } });
+      assert.equal(pairNull.status, 403);
+
       const pairEvil = await fetch(`${bus.url}/pair`, {
         method: 'POST',
         headers: { origin: 'https://evil.example' }
@@ -102,6 +119,31 @@ describe('swarm-bus security & lifecycle', () => {
       const paired = await pairExt.json();
       assert.equal(paired.token, bus.token);
       assert.equal(paired.port, bus.port);
+
+      // Malformed HTTP and WS URLs return 400 cleanly
+      const badHttpStatus = await new Promise((resolve, reject) => {
+        const req = httpRequest({ host: '127.0.0.1', port: bus.port, path: '//[::1', method: 'GET' }, (res) => {
+          res.resume();
+          resolve(res.statusCode);
+        });
+        req.on('error', reject);
+        req.end();
+      });
+      assert.equal(badHttpStatus, 400);
+
+      const badWsHead = await new Promise((resolve, reject) => {
+        const sock = netConnect({ host: '127.0.0.1', port: bus.port }, () => {
+          sock.write(
+            'GET //[::1 HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+            'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n'
+          );
+        });
+        let data = '';
+        sock.on('data', (chunk) => { data += chunk.toString('utf8'); });
+        sock.on('end', () => resolve(data));
+        sock.on('error', reject);
+      });
+      assert.match(badWsHead, /^HTTP\/1\.1 400 Bad Request/);
 
       // /rpc rejects evil Origin (even with valid token) -> 403, missing/wrong token -> 401
       const rpcEvil = await rpc(bus, 'session.status', {}, { origin: 'https://evil.example' });
@@ -244,30 +286,60 @@ describe('swarm-bus security & lifecycle', () => {
       await assert.rejects(() => bus.dispatchToTab(101, { action: 'hang_cmd' }, 30), /timed out/i);
       await assert.rejects(() => bus.dispatchToTab(9999, { action: 'ping' }), /not connected/i);
 
-      // Sanitized finding_event + waitForEvent wakeup
+      // Sanitized finding_event cannot overwrite seq/ts/type/untrustedPageData + waitForEvent wakeup
       const seqPreFinding = (await rpc(bus, 'session.status')).body.result.seq;
       const waitFinding = bus.waitForEvent(seqPreFinding, 2000);
       ws1.send(JSON.stringify({
         type: 'finding_event',
         tabId: 101,
+        seq: 999,
+        ts: 'fake',
+        untrustedPageData: false,
         selector: '.btn\x00',
         details: JSON.parse('{"__proto__":{"polluted":true},"note":"bad\\u0007text"}')
       }));
       const findingEv = (await waitFinding).events.at(-1);
       assert.equal(findingEv.type, 'finding_event');
+      assert.equal(findingEv.seq, seqPreFinding + 1);
+      assert.notEqual(findingEv.ts, 'fake');
+      assert.equal(Number.isNaN(Date.parse(findingEv.ts)), false);
       assert.equal(findingEv.untrustedPageData, true);
       assert.equal(findingEv.selector, '.btn');
       assert.deepEqual(findingEv.details, { note: 'badtext' });
       assert.equal({}.polluted, undefined);
 
-      // requireLock enforces active lock before mutating tab.command
+      // Mandatory lock enforcement on mutating tab.command (even when requireLock or agentId is omitted)
       const unlockFail = await rpc(bus, 'tab.command', {
         tabId: 101,
         agentId: 'qa-1',
         requireLock: true,
         command: { action: 'click', selector: '#play' }
       });
-      assert.equal(unlockFail.status, 400);
+      assert.equal(unlockFail.status, 409);
+      assert.equal(unlockFail.body.code, 'LOCK_HELD');
+
+      const unlockedClick = await rpc(bus, 'tab.command', {
+        tabId: 101,
+        agentId: 'qa-1',
+        command: { action: 'click', selector: '#play' }
+      });
+      assert.equal(unlockedClick.status, 409);
+      assert.equal(unlockedClick.body.code, 'LOCK_HELD');
+
+      const unlockedViewportNoAgent = await rpc(bus, 'tab.command', {
+        tabId: 101,
+        command: { action: 'set_viewport', width: 390, height: 844 }
+      });
+      assert.equal(unlockedViewportNoAgent.status, 409);
+      assert.equal(unlockedViewportNoAgent.body.code, 'LOCK_HELD');
+
+      const unlockedViewport = await rpc(bus, 'tab.command', {
+        tabId: 101,
+        agentId: 'qa-1',
+        command: { action: 'set_viewport', width: 390, height: 844 }
+      });
+      assert.equal(unlockedViewport.status, 409);
+      assert.equal(unlockedViewport.body.code, 'LOCK_HELD');
 
       // waitForEvent wakes up on route_changed and times out cleanly when idle
       const statusBefore = await rpc(bus, 'session.status');
@@ -299,6 +371,24 @@ describe('swarm-bus security & lifecycle', () => {
         command: { action: 'click', selector: '#play' }
       });
       assert.equal(mutBlocked.status, 409);
+      assert.equal(mutBlocked.body.code, 'LOCK_HELD');
+
+      const lockedClick = await rpc(bus, 'tab.command', {
+        tabId: 101,
+        agentId: 'qa-1',
+        command: { action: 'click', selector: '#play' }
+      });
+      assert.equal(lockedClick.status, 200);
+      assert.equal(lockedClick.body.result.echo.action, 'click');
+
+      const lockedViewport = await rpc(bus, 'tab.command', {
+        tabId: 101,
+        agentId: 'qa-1',
+        command: { action: 'set_viewport', width: 390, height: 844 }
+      });
+      assert.equal(lockedViewport.status, 200);
+      assert.equal(lockedViewport.body.result.echo.action, 'set_viewport');
+
       const rel = await rpc(bus, 'lock.release', { agentId: 'qa-1', tabId: 101 });
       assert.equal(rel.status, 200);
       assert.equal(rel.body.result.released, true);

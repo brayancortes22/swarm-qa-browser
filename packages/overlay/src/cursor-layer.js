@@ -1,6 +1,6 @@
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const COLOR_RE = /^#[0-9a-fA-F]{3,8}$|^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*[\d.]+)?\s*\)$/;
-const CTRL_RE = /[\u0000-\u001F\u007F-\u009F]/g;
+const CTRL_RE = /[\u0000-\u001F\u007F-\u009F\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g;
 
 const STYLES = `
 .swarm-cursor-layer{pointer-events:none;position:fixed;inset:0;z-index:2;overflow:hidden}
@@ -16,6 +16,7 @@ const STYLES = `
 const clean = (v, max = 64) => String(v ?? '').replace(/[\r\n\t]+/g, ' ').replace(CTRL_RE, '').trim().slice(0, max);
 const safeColor = (c) => (COLOR_RE.test(String(c || '').trim()) ? String(c).trim() : '#0D99FF');
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+const hasNum = (v) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) && Number.isFinite(Number(v));
 
 function makeSvg(doc) {
   const mkNs = (tag) => (doc.createElementNS ? doc.createElementNS(SVG_NS, tag) : doc.createElement(tag));
@@ -65,7 +66,7 @@ export function createCursorLayer(shadowRoot) {
     el.appendChild(svg);
     el.appendChild(pill);
     layer.appendChild(el);
-    return { el, path, dot, labelEl, statusEl, boxEl: null, dimsEl: null };
+    return { el, path, dot, labelEl, statusEl, boxEl: null, dimsEl: null, x: 0, y: 0, color: '', label: '' };
   }
 
   function syncBox(entry, box, color) {
@@ -98,14 +99,19 @@ export function createCursorLayer(shadowRoot) {
     if (!key) return;
     let entry = cursors.get(key);
     if (!entry) { entry = createEntry(key); cursors.set(key, entry); }
-    const col = safeColor(color);
+    const col = color !== undefined ? safeColor(color) : (entry.color || '#0D99FF');
+    entry.color = col;
     entry.path.setAttribute('fill', col);
     entry.dot.style.background = col;
-    entry.labelEl.textContent = clean(label || key, 48);
+    const lbl = label !== undefined ? clean(label || key, 48) : (entry.label || key);
+    entry.label = lbl;
+    entry.labelEl.textContent = lbl;
     const st = clean(status, 40);
     entry.statusEl.textContent = st;
     entry.statusEl.style.display = st ? 'inline-block' : 'none';
-    entry.el.style.transform = `translate3d(${num(x)}px, ${num(y)}px, 0)`;
+    entry.x = hasNum(x) ? Number(x) : (entry.x ?? 0);
+    entry.y = hasNum(y) ? Number(y) : (entry.y ?? 0);
+    entry.el.style.transform = `translate3d(${entry.x}px, ${entry.y}px, 0)`;
     syncBox(entry, box, col);
   }
 

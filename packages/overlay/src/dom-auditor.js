@@ -13,14 +13,16 @@ export function sanitizeText(value, maxLen = 280) {
 
 export const isSensitiveElement = (el) => Boolean(el && tagOf(el) === 'input' && (inputType(el) === 'password' || inputType(el) === 'hidden'));
 
+const escCss = (val) => (globalThis.CSS?.escape ? globalThis.CSS.escape(String(val)) : String(val).replace(/[^a-zA-Z0-9_-]/g, '\\$&'));
+
 export function buildSelector(el) {
   if (!el) return 'document';
   const parts = [];
   for (let cur = el, d = 0; cur && d < 4 && tagOf(cur) && !tagOf(cur).startsWith('#'); d += 1) {
-    if (cur.id) { parts.unshift(`#${cur.id}`); break; }
+    if (cur.id) { parts.unshift(`#${escCss(cur.id)}`); break; }
     let seg = tagOf(cur);
     const tid = attrOf(cur, 'data-testid');
-    if (tid) seg += `[data-testid="${tid}"]`;
+    if (tid) seg += `[data-testid="${escCss(tid)}"]`;
     else if (cur.parentElement?.children?.length > 1) {
       const same = Array.from(cur.parentElement.children).filter((c) => tagOf(c) === seg);
       if (same.length > 1) seg += `:nth-of-type(${same.indexOf(cur) + 1})`;
@@ -37,7 +39,7 @@ const getRect = (el) => {
 };
 
 function isVisible(el, win) {
-  for (let cur = el; cur && tagOf(cur); cur = cur.parentElement || cur.parentNode) {
+  for (let cur = el; cur && tagOf(cur) && !tagOf(cur).startsWith('#') && (cur.nodeType == null || cur.nodeType === 1); cur = cur.parentElement || cur.parentNode) {
     if (IGNORED_IDS.has(cur.id)) return false;
     const stAttr = String(attrOf(cur, 'style') || ''), s = cur.style || {};
     if (cur.hidden === true || (attrOf(cur, 'hidden') !== null && attrOf(cur, 'hidden') !== 'false')) return false;
@@ -113,8 +115,11 @@ export function runDomAudit({ doc = globalThis.document, rootDocument, win = glo
     if (Number(root.scrollWidth) > Number(vp.width)) out.push(makeFinding('overflow-document', 'P1', 'overflow', 'html', getRect(root), `Page overflows viewport width (${vp.width}px)`, `scrollWidth <= ${vp.width}px`, `scrollWidth=${root.scrollWidth}px`));
     for (const el of vis) {
       if (el === root || el.clientWidth <= 0 || el.scrollWidth <= el.clientWidth + 2) continue;
-      const ox = (win?.getComputedStyle?.(el)?.overflowX ?? el.style?.overflowX ?? '').toLowerCase();
-      if (ox !== 'auto' && ox !== 'scroll') out.push(makeFinding('overflow-container', 'P2', 'overflow', buildSelector(el), getRect(el), 'Container overflows horizontally', `scrollWidth <= ${el.clientWidth + 2}px`, `scrollWidth=${el.scrollWidth}px, clientWidth=${el.clientWidth}px`));
+      const cs = win?.getComputedStyle?.(el);
+      const ox = String(cs?.overflowX ?? el.style?.overflowX ?? '').toLowerCase();
+      const to = String(cs?.textOverflow ?? el.style?.textOverflow ?? '').toLowerCase();
+      if (ox === 'auto' || ox === 'scroll' || ((ox === 'hidden' || ox === 'clip') && to === 'ellipsis')) continue;
+      out.push(makeFinding('overflow-container', 'P2', 'overflow', buildSelector(el), getRect(el), 'Container overflows horizontally', `scrollWidth <= ${el.clientWidth + 2}px`, `scrollWidth=${el.scrollWidth}px, clientWidth=${el.clientWidth}px`));
     }
   }
   if (active.has('overlap')) {

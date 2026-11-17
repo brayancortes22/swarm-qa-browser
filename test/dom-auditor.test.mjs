@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import { sanitizeText, isSensitiveElement, buildSelector, runDomAudit } from '../packages/overlay/src/dom-auditor.js';
+import { createIssuePins } from '../packages/overlay/src/issue-pins.js';
+import { createCursorLayer } from '../packages/overlay/src/cursor-layer.js';
+import { MAIN_WORLD_PROBE_SOURCE } from '../packages/overlay/src/network-console.js';
+import { mountSwarmOverlay } from '../packages/overlay/src/overlay-entry.js';
 
 function el(tag, { id = '', attrs = {}, text = '', rect = { x: 0, y: 0, width: 100, height: 48 }, style = {}, children = [], ...rest } = {}) {
   const node = {
@@ -137,5 +142,130 @@ test('mountSwarmOverlay isolates closed shadow root, omits window leak, and trac
   assert.equal(ctrl.getRoute(), '/albums');
   assert.equal(events.some((e) => e.type === 'route_change' && e.pathname === '/albums'), true);
   assert.equal(ctrl.runAudit({ viewport: { width: 390, height: 844 } }).findings.some((f) => f.category === 'a11y'), true);
+  ctrl.destroy();
+});
+
+test('isVisible never passes #document (nodeType 9) to window.getComputedStyle', () => {
+  const btn = el('button', { id: 'ok', text: '' });
+  const { doc, win } = makeDoc([btn]);
+  doc.nodeType = 9;
+  doc.nodeName = '#document';
+  doc.documentElement.nodeType = 1;
+  doc.documentElement.parentNode = doc;
+  doc.body.nodeType = 1;
+  btn.nodeType = 1;
+  win.getComputedStyle = (node) => {
+    if (node?.nodeType !== 1) throw new TypeError("Failed to execute 'getComputedStyle' on 'Window': parameter 1 is not of type 'Element'.");
+    return {};
+  };
+  const findings = runDomAudit({ doc, win, checks: ['a11y'], viewport: { width: 1440, height: 900 } });
+  assert.equal(findings.some((f) => f.selector === '#ok'), true);
+});
+
+test('dom-auditor ignores CSS ellipsis truncation, catches real overflow, and escapes special selector IDs', () => {
+  const truncHidden = el('div', { id: 'trunc-h', clientWidth: 180, scrollWidth: 260, style: { overflowX: 'hidden', textOverflow: 'ellipsis' } });
+  const truncClip = el('div', { id: 'trunc-c', clientWidth: 180, scrollWidth: 260, style: { overflowX: 'clip', textOverflow: 'ellipsis' } });
+  const realHidden = el('div', { id: 'clip-bad', clientWidth: 180, scrollWidth: 260, style: { overflowX: 'hidden' } });
+  const { doc, win } = makeDoc([truncHidden, truncClip, realHidden], { clientWidth: 390, scrollWidth: 390 });
+  const findings = runDomAudit({ doc, win, checks: ['overflow'], viewport: { width: 390, height: 844 } });
+  assert.deepEqual(findings.map((f) => f.selector), ['#clip-bad']);
+  assert.equal(buildSelector(el('div', { id: 'sec.1:2' })), '#sec\\.1\\:2');
+  assert.equal(buildSelector(el('button', { attrs: { 'data-testid': 'pay:btn"1' } })), 'button[data-testid="pay\\:btn\\"1"]');
+});
+
+test('issue-pins sets untruncated CSS including .swarm-hud, strips bidi chars, and scopes pins by viewport bucket', () => {
+  const { doc } = makeDoc([]);
+  doc.createElement = (t) => el(t);
+  const shadow = el('shadow');
+  shadow.ownerDocument = doc;
+  const pins = createIssuePins(shadow);
+  const styleEl = shadow.children.find((c) => c.tagName === 'STYLE');
+  assert.equal(styleEl.textContent.includes('.swarm-hud'), true);
+  assert.equal(styleEl.textContent.includes('.swarm-hud.is-collapsed'), true);
+  assert.equal(styleEl.textContent.length > 280, true);
+
+  const layer = shadow.children.find((c) => c.className === 'swarm-pins-layer');
+  const tickets = [
+    { id: 't-\u202E1\u200B', pathname: '/home', severity: 'P1', status: 'open', viewport: { width: 390, height: 844 } },
+    { id: 't-desktop', pathname: '/home', severity: 'P2', status: 'open', viewport: { width: 1440, height: 900 } },
+    { id: 't-laptop', pathname: '/home', severity: 'P3', status: 'open', viewport: { width: 1280, height: 800 } },
+    { id: 't-tablet', pathname: '/home', severity: 'P2', status: 'open', viewport: { width: 768, height: 1024 } },
+    { id: 't-any', pathname: '/home', severity: 'P2', status: 'open' }
+  ];
+  pins.setTickets(tickets, '/home', 1440);
+  assert.deepEqual(layer.children.map((c) => c.getAttribute('data-ticket-id')), ['t-desktop', 't-laptop', 't-tablet', 't-any']);
+  pins.setTickets(tickets, '/home', 390);
+  assert.deepEqual(layer.children.map((c) => c.getAttribute('data-ticket-id')), ['t-1', 't-any']);
+  pins.destroy();
+});
+
+test('cursor-layer preserves (x, y) on status-only updates and strips bidi/zero-width chars', () => {
+  const { doc } = makeDoc([]);
+  doc.createElement = (t) => el(t);
+  const shadow = el('shadow');
+  shadow.ownerDocument = doc;
+  const layerApi = createCursorLayer(shadow);
+  layerApi.upsertCursor({ id: 'layout', label: 'Layout\u202E\u200B', color: '#38BDF8', x: 150, y: 240, status: 'Listo' });
+  layerApi.upsertCursor({ id: 'layout', status: 'Auditando\u200B' });
+  const layer = shadow.children.find((c) => c.className === 'swarm-cursor-layer');
+  const cursor = layer.children[0];
+  assert.equal(cursor.style.transform, 'translate3d(150px, 240px, 0)');
+  const [pill] = cursor.children.filter((c) => c.className === 'swarm-cursor-pill');
+  const [, labelEl, statusEl] = pill.children;
+  assert.equal(labelEl.textContent, 'Layout');
+  assert.equal(statusEl.textContent, 'Auditando');
+});
+
+test('network probe normalizes fetch URLs and overlay-entry supports clearConsole, runAudit clearConsole, and viewport pin filtering', async () => {
+  const dispatched = [];
+  const winCtx = {
+    location: { href: 'http://localhost:5173/albums' },
+    CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init?.detail; } },
+    dispatchEvent: (ev) => dispatched.push(ev),
+    addEventListener: () => {},
+    console: { error: () => {} },
+    fetch: async () => ({ status: 500, ok: false }),
+    URL
+  };
+  winCtx.window = winCtx;
+  vm.runInNewContext(MAIN_WORLD_PROBE_SOURCE('nonce1'), winCtx);
+  await winCtx.fetch('/api/tracks');
+  assert.equal(dispatched[0]?.detail?.url, 'http://localhost:5173/api/tracks');
+
+  const { doc, win } = makeDoc([]);
+  let path = '/home';
+  const listeners = new Map();
+  doc.defaultView = win;
+  let shadowRef = null;
+  doc.createElement = (t) => {
+    const n = el(t);
+    n.attachShadow = () => { const s = el('shadow'); s.ownerDocument = doc; shadowRef = s; return s; };
+    return n;
+  };
+  win.innerWidth = 390;
+  win.location = { get pathname() { return path; } };
+  win.history = { pushState: (_, __, url) => { path = url; }, replaceState: () => {} };
+  win.addEventListener = (k, fn) => listeners.set(k, fn);
+  win.removeEventListener = (k) => listeners.delete(k);
+
+  const ctrl = mountSwarmOverlay({ doc, win, nonce: 'n2', clearConsoleOnRouteChange: true });
+  listeners.get('__swarm_qa_probe_n2')({ detail: { kind: 'fetch', status: 500, url: 'http://localhost:5173/api/fail' } });
+  assert.equal(ctrl.runAudit({ clearConsole: true }).findings.some((f) => f.category === 'console-net'), true);
+  assert.equal(ctrl.runAudit().findings.some((f) => f.category === 'console-net'), false);
+
+  listeners.get('__swarm_qa_probe_n2')({ detail: { kind: 'console.error', message: 'Stale error' } });
+  ctrl.clearConsole();
+  assert.equal(ctrl.runAudit().findings.some((f) => f.category === 'console-net'), false);
+
+  listeners.get('__swarm_qa_probe_n2')({ detail: { kind: 'console.error', message: 'Pre-route error' } });
+  win.history.pushState({}, '', '/next');
+  assert.equal(ctrl.runAudit().findings.some((f) => f.category === 'console-net'), false);
+
+  ctrl.setTickets([
+    { id: 'm1', pathname: '/next', severity: 'P1', status: 'open', viewport: { width: 390, height: 844 } },
+    { id: 'd1', pathname: '/next', severity: 'P1', status: 'open', viewport: { width: 1440, height: 900 } }
+  ]);
+  const pinsLayer = shadowRef.children.find((c) => c.className === 'swarm-pins-layer');
+  assert.deepEqual(pinsLayer.children.map((c) => c.getAttribute('data-ticket-id')), ['m1']);
   ctrl.destroy();
 });

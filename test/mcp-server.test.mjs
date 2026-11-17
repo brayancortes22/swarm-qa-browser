@@ -89,7 +89,7 @@ function createJsonRpcClient(stdin, stdout) {
 function connectMockTab(bus, { tabId = 101, url = 'http://localhost:5173/player', viewport = { width: 390, height: 844 }, findings = [] } = {}) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`${bus.wsUrl}/?token=${bus.token}`);
-    const state = { commands: [], tickets: [], viewport: { ...viewport }, findings: [...findings] };
+    const state = { commands: [], auditViewports: [], tickets: [], lastSetTickets: null, viewport: { ...viewport }, findings: typeof findings === 'function' ? findings : [...findings] };
     ws.once('open', () => {
       ws.send(JSON.stringify({ type: 'hello', tabId, url, title: 'Sonora Mock', viewport: state.viewport }));
     });
@@ -103,12 +103,15 @@ function connectMockTab(bus, { tabId = 101, url = 'http://localhost:5173/player'
         state.viewport = { width: cmd.width, height: cmd.height };
       } else if (cmd.action === 'set_tickets') {
         state.tickets = cmd.tickets || [];
+        state.lastSetTickets = cmd;
       } else if (cmd.action === 'run_audit') {
+        state.auditViewports.push({ ...state.viewport });
+        const list = typeof state.findings === 'function' ? state.findings(cmd, state) : state.findings;
         return ws.send(JSON.stringify({
           type: 'command_result',
           commandId: msg.commandId,
           ok: true,
-          result: { pathname: new URL(url).pathname, viewport: cmd.viewport || state.viewport, findings: state.findings }
+          result: { pathname: new URL(url).pathname, viewport: cmd.viewport || state.viewport, findings: list }
         }));
       }
       ws.send(JSON.stringify({ type: 'command_result', commandId: msg.commandId, ok: true, result: { ok: true, action: cmd.action } }));
@@ -169,6 +172,27 @@ describe('mcp-server tools & stdio transport', () => {
       const res = await resPromise;
       assert.equal(res.id, 9);
       assert.equal(res.result.tools.length, 18);
+
+      // Verify Content-Type preceding Content-Length (split across chunks)
+      const payload2 = JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'ping', params: {} });
+      const resPromise2 = new Promise((resolve) => {
+        let acc = '';
+        const onChunk = (c) => {
+          acc += c.toString('utf8');
+          const idx = acc.indexOf('\r\n\r\n');
+          if (idx !== -1) {
+            const len = Number(/Content-Length:\s*(\d+)/i.exec(acc.slice(0, idx))?.[1] || 0);
+            const body = acc.slice(idx + 4);
+            if (Buffer.byteLength(body, 'utf8') >= len) { stdout2.off('data', onChunk); resolve(JSON.parse(body.slice(0, len))); }
+          }
+        };
+        stdout2.on('data', onChunk);
+      });
+      stdin2.write('Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n');
+      stdin2.write(`Content-Length: ${Buffer.byteLength(payload2, 'utf8')}\r\n\r\n${payload2}`);
+      const res2 = await resPromise2;
+      assert.equal(res2.id, 10);
+      assert.deepEqual(res2.result, {});
     } finally {
       await server2.close();
     }
@@ -324,6 +348,155 @@ describe('mcp-server tools & stdio transport', () => {
       await server.close();
       await bus.close();
       tmp.cleanup();
+    }
+  });
+
+  it('enforces mandatory lock with synthesized agentId on swarm_click and forwards rect in swarm_report_finding', async () => {
+    const calls = [];
+    const spyBus = {
+      rpc: async (action, params) => {
+        calls.push({ action, params });
+        if (action === 'session.status') return { selectedTabId: 101, tabs: [{ tabId: 101, pathname: '/player', url: 'http://localhost:5173/player', viewport: { width: 390, height: 844 } }], locks: { locked: false, tabId: 101 }, ticketsSummary: { open: 1, reopened: 0, awaiting_reverify: 0, verified: 0 } };
+        if (action === 'tickets.create') return { id: 'T-1', tabId: 101, ...params };
+        if (action === 'tickets.list') return [{ id: 'T-1', tabId: 101, pathname: '/player', viewport: { width: 390, height: 844 }, status: 'open' }];
+        return { ok: true };
+      }
+    };
+    const stdin = new PassThrough(), stdout = new PassThrough();
+    const server = createMcpServer({ busClient: spyBus, stdin, stdout });
+    const client = createJsonRpcClient(stdin, stdout);
+
+    try {
+      const clickRes = await client.callTool('swarm_click', { tabId: 101, selector: '#play-btn' });
+      assert.equal(clickRes.isError, false);
+      const acq = calls.find((c) => c.action === 'lock.acquire');
+      const cmd = calls.find((c) => c.action === 'tab.command' && c.params.command?.action === 'click');
+      const rel = calls.find((c) => c.action === 'lock.release');
+      assert.match(acq.params.agentId, /^mcp-[0-9a-f]{8}$/);
+      assert.equal(acq.params.scope, 'interaction');
+      assert.equal(acq.params.ttlMs, 15000);
+      assert.equal(cmd.params.requireLock, true);
+      assert.equal(cmd.params.agentId, acq.params.agentId);
+      assert.equal(rel.params.agentId, acq.params.agentId);
+
+      const rect = { x: 10, y: 20, width: 120, height: 32 };
+      await client.callTool('swarm_report_finding', { tabId: 101, description: 'Misaligned badge', rect });
+      const created = calls.find((c) => c.action === 'tickets.create');
+      assert.deepEqual(created.params.rect, rect);
+    } finally {
+      await server.close();
+    }
+
+    // Real bus verification: omitted agentId acquires/releases lock and respects another agent's active lock
+    const tmp = makeTempRegistry('swarm-mcp-lock-');
+    const bus = await startSwarmBus({ port: 0, registryPath: tmp.registryPath });
+    const tab = await connectMockTab(bus, { tabId: 101 });
+    const stdin2 = new PassThrough(), stdout2 = new PassThrough();
+    const srv2 = createMcpServer({ registryPath: tmp.registryPath, stdin: stdin2, stdout: stdout2 });
+    const cli2 = createJsonRpcClient(stdin2, stdout2);
+
+    try {
+      await cli2.request('initialize', {});
+      const preSeq = (await cli2.callTool('swarm_session_status', { tabId: 101 })).data.seq;
+      const unlockedClick = await cli2.callTool('swarm_click', { tabId: 101, selector: '#play-btn' });
+      assert.equal(unlockedClick.isError, false);
+      assert.equal((await cli2.callTool('swarm_session_status', { tabId: 101 })).data.locks.locked, false);
+      const lockEvs = (await cli2.callTool('swarm_await_event', { sinceSeq: preSeq, timeoutMs: 200 })).data.events;
+      const acqEv = lockEvs.find((e) => e.type === 'lock_acquired');
+      const relEv = lockEvs.find((e) => e.type === 'lock_released');
+      assert.match(acqEv?.agentId || '', /^mcp-[0-9a-f]{8}$/);
+      assert.equal(relEv?.agentId, acqEv.agentId);
+
+      await cli2.callTool('swarm_acquire_lock', { agentId: 'qa-1', tabId: 101, scope: 'interaction' });
+      const clickCountBefore = tab.state.commands.filter((c) => c.action === 'click').length;
+      const blocked = await cli2.callTool('swarm_click', { tabId: 101, selector: '#play-btn' });
+      assert.equal(blocked.isError, true);
+      assert.equal(blocked.data.code, 'LOCK_HELD');
+      assert.match(blocked.data.error, /locked/i);
+      assert.equal(tab.state.commands.filter((c) => c.action === 'click').length, clickCountBefore);
+      await cli2.callTool('swarm_release_lock', { agentId: 'qa-1', tabId: 101 });
+    } finally {
+      tab.ws.close();
+      await srv2.close();
+      await bus.close();
+      tmp.cleanup();
+    }
+  });
+
+  it('restores multiple viewports (390x844 & 1440x900), clears stale console logs, syncs pins/summary, and rejects non-loopback registry hosts', async () => {
+    const tmp = makeTempRegistry('swarm-mcp-multivp-');
+    const bus = await startSwarmBus({ port: 0, registryPath: tmp.registryPath });
+    let activeFindings = {
+      390: [{ ruleId: 'overflow-document', severity: 'P1', category: 'overflow', selector: 'html', description: 'Mobile overflow', expected: 'scrollWidth <= 390', actual: 'scrollWidth=440' }],
+      1440: [{ ruleId: 'overlap-elements', severity: 'P1', category: 'overlap', selector: '.hero', description: 'Desktop overlap', expected: 'Overlap <= 4px', actual: 'overlap=12x8px' }]
+    };
+    const tab = await connectMockTab(bus, {
+      tabId: 101,
+      viewport: { width: 1440, height: 900 },
+      findings: (cmd, st) => activeFindings[cmd.viewport?.width ?? st.viewport.width] || []
+    });
+    const stdin = new PassThrough(), stdout = new PassThrough();
+    const server = createMcpServer({ registryPath: tmp.registryPath, stdin, stdout });
+    const client = createJsonRpcClient(stdin, stdout);
+
+    try {
+      await client.request('initialize', {});
+      await client.callTool('swarm_spawn_cursors', { tabId: 101, roles: ['layout', 'responsive'] });
+
+      const desktopAudit = await client.callTool('swarm_run_dom_audit', { tabId: 101, agentId: 'layout' });
+      const tDesktop = desktopAudit.data.createdTickets[0];
+      assert.equal(tab.state.lastSetTickets.viewportWidth, 1440);
+      assert.deepEqual(tab.state.lastSetTickets.summary, { activeAgents: 2, open: 1, awaiting_reverify: 0, verified: 0 });
+
+      await client.callTool('swarm_set_viewport', { tabId: 101, agentId: 'responsive', width: 390, height: 844 });
+      tab.ws.send(JSON.stringify({ type: 'route_changed', tabId: 101, url: 'http://localhost:5173/player', viewport: { width: 390, height: 844 } }));
+      await new Promise((r) => setTimeout(r, 40));
+
+      const mobileAudit = await client.callTool('swarm_run_dom_audit', { tabId: 101, agentId: 'layout' });
+      const tMobile = mobileAudit.data.createdTickets[0];
+      assert.equal(tab.state.lastSetTickets.viewportWidth, 390);
+      assert.equal(tab.state.lastSetTickets.summary.open, 2);
+
+      // Switch to unrelated 800x600 viewport so mark_fixed must restore BOTH 390x844 and 1440x900
+      await client.callTool('swarm_set_viewport', { tabId: 101, agentId: 'responsive', width: 800, height: 600 });
+      tab.ws.send(JSON.stringify({ type: 'route_changed', tabId: 101, url: 'http://localhost:5173/player', viewport: { width: 800, height: 600 } }));
+      await new Promise((r) => setTimeout(r, 40));
+
+      await client.callTool('swarm_claim_findings', { ticketIds: [tMobile.id, tDesktop.id], devAgentId: 'dev-1' });
+      activeFindings = { 390: [], 1440: [] };
+      const cmdStart = tab.state.commands.length;
+      tab.state.auditViewports.length = 0;
+
+      const fixed = await client.callTool('swarm_mark_fixed', {
+        ticketIds: [tMobile.id, tDesktop.id],
+        devAgentId: 'dev-1',
+        summary: 'Fixed mobile overflow and desktop overlap',
+        waitForHmrMs: 0
+      });
+      assert.deepEqual(fixed.data.tickets.map((t) => t.status), ['verified', 'verified']);
+      const cmds = tab.state.commands.slice(cmdStart);
+      const clearIdx = cmds.findIndex((c) => c.action === 'get_console_network' && c.clear === true);
+      const firstAuditIdx = cmds.findIndex((c) => c.action === 'run_audit');
+      assert.ok(clearIdx !== -1 && clearIdx < firstAuditIdx, 'get_console_network({ clear: true }) must precede run_audit');
+      assert.deepEqual(tab.state.auditViewports, [{ width: 390, height: 844 }, { width: 1440, height: 900 }]);
+      assert.equal(tab.state.lastSetTickets.viewportWidth, 1440);
+      assert.deepEqual(tab.state.lastSetTickets.summary, { activeAgents: 2, open: 0, awaiting_reverify: 0, verified: 2 });
+    } finally {
+      tab.ws.close();
+      await server.close();
+      await bus.close();
+      tmp.cleanup();
+    }
+
+    // Non-loopback bus.json host validation
+    const badTmp = makeTempRegistry('swarm-mcp-badhost-');
+    writeFileSync(badTmp.registryPath, JSON.stringify({ pid: process.pid, port: 47999, host: 'evil.example.com', token: 'secret' }), 'utf8');
+    const badServer = createMcpServer({ registryPath: badTmp.registryPath, stdin: new PassThrough(), stdout: new PassThrough() });
+    try {
+      await assert.rejects(() => badServer.ensureBus(), /non-loopback/i);
+    } finally {
+      await badServer.close();
+      badTmp.cleanup();
     }
   });
 
