@@ -129,6 +129,45 @@ export function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.
     issuePins.setTickets(cachedTickets, pathname || getRoute(), vpWidth ?? win?.innerWidth);
   }
 
+  const appliedPatches = new Map();
+
+  function applyPatch(patch) {
+    if (!patch?.id || !doc) return false;
+    if (patch.type === 'css' && patch.css) {
+      let st = doc.getElementById(`__swarm_patch_${patch.id}`);
+      if (!st) {
+        st = doc.createElement('style');
+        st.id = `__swarm_patch_${patch.id}`;
+        (doc.head || doc.documentElement).appendChild(st);
+      }
+      st.textContent = patch.css;
+      appliedPatches.set(patch.id, { type: 'css', el: st });
+      return true;
+    }
+    if (patch.type === 'attr' && patch.selector && patch.attr) {
+      const target = doc.querySelector(patch.selector);
+      if (target) {
+        const prev = target.getAttribute(patch.attr.name);
+        target.setAttribute(patch.attr.name, patch.attr.value);
+        appliedPatches.set(patch.id, { type: 'attr', el: target, name: patch.attr.name, prev });
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function revertPatch(id) {
+    const entry = appliedPatches.get(id);
+    if (!entry) return false;
+    if (entry.type === 'css') entry.el.remove?.();
+    if (entry.type === 'attr') {
+      if (entry.prev == null) entry.el.removeAttribute?.(entry.name);
+      else entry.el.setAttribute?.(entry.name, entry.prev);
+    }
+    appliedPatches.delete(id);
+    return true;
+  }
+
   function destroy() {
     if (destroyed) return;
     destroyed = true;
@@ -137,6 +176,7 @@ export function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.
     win?.removeEventListener?.('hashchange', onRouteEv);
     if (hist && origPush) hist.pushState = origPush;
     if (hist && origReplace) hist.replaceState = origReplace;
+    for (const id of Array.from(appliedPatches.keys())) revertPatch(id);
     cursors.clearAll();
     issuePins.destroy();
     consoleCollector.destroy();
@@ -150,6 +190,8 @@ export function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.
     removeCursor: (id) => cursors.removeCursor(id),
     runAudit,
     setTickets,
+    applyPatch,
+    revertPatch,
     clearConsole: () => consoleCollector.clear(),
     updateSummary: (stats) => issuePins.updateSummary(stats),
     getRoute,

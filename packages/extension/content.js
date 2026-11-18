@@ -112,6 +112,8 @@
         state.overlay.updateSummary(cmd.summary || { open: (counts.open || 0) + (counts.reopened || 0), awaiting_reverify: counts.awaiting_reverify || 0, verified: counts.verified || 0 });
         return { ok: true, count: list.length };
       }
+      case 'apply_patch': return { ok: state.overlay.applyPatch?.(cmd.patch ?? cmd) ?? false };
+      case 'revert_patch': return { ok: state.overlay.revertPatch?.(cmd.id ?? msg.id) ?? false };
       case 'update_summary': state.overlay.updateSummary(cmd.summary ?? cmd); return { ok: true };
       case 'clear_console': state.overlay.runAudit({ checks: ['__noop__'], clearConsole: true }); return { ok: true };
       case 'run_audit': return runAuditWithLogs(cmd, msg.cdpLogs);
