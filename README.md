@@ -54,7 +54,8 @@ node packages/cdp-adapter/src/cdp-bridge.mjs --port 9222 --url localhost:5173
 
 ## Estructura y Documentación
 
-- Especificación: [docs/superpowers/specs/2026-11-17-swarm-qa-browser-design.md](docs/superpowers/specs/2026-11-17-swarm-qa-browser-design.md)
+- **Especificación Canónica & Visión de Producto:** [docs/SWARM_QA_PLATFORM_SPEC.md](docs/SWARM_QA_PLATFORM_SPEC.md)
 - Arquitectura y seguridad: [docs/architecture.md](docs/architecture.md)
+- Especificación inicial: [docs/superpowers/specs/2026-11-17-swarm-qa-browser-design.md](docs/superpowers/specs/2026-11-17-swarm-qa-browser-design.md)
 - Plan de tareas: [docs/superpowers/plans/2026-11-17-swarm-qa-browser-plan.md](docs/superpowers/plans/2026-11-17-swarm-qa-browser-plan.md)
 - Checklists: [security.md](docs/checklists/security.md), [ux.md](docs/checklists/ux.md), [tests.md](docs/checklists/tests.md)
