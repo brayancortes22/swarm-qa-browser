@@ -146,6 +146,7 @@ export function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.
   return {
     spawnCursors,
     moveCursor,
+    triggerClick: (id) => cursors.triggerClick(id),
     removeCursor: (id) => cursors.removeCursor(id),
     runAudit,
     setTickets,

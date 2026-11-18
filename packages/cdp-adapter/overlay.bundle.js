@@ -9,13 +9,17 @@ const CTRL_RE = /[\u0000-\u001F\u007F-\u009F\u200b-\u200f\u202a-\u202e\u2060-\u2
 
 const STYLES = `
 .swarm-cursor-layer{pointer-events:none;position:fixed;inset:0;z-index:2;overflow:hidden}
-.swarm-cursor{position:fixed;left:0;top:0;pointer-events:none;will-change:transform;transition:transform 220ms cubic-bezier(0.16,1,0.3,1),opacity 180ms ease}
-.swarm-cursor-svg{display:block;filter:drop-shadow(0 2px 6px rgba(0,0,0,0.45))}
-.swarm-cursor-pill{display:inline-flex;align-items:center;gap:6px;margin:2px 0 0 14px;padding:3px 8px;border-radius:999px;background:rgba(10,11,15,0.88);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,0.14);box-shadow:0 6px 20px rgba(0,0,0,0.35);color:#f4f4f5;font:600 11px/1.2 Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;white-space:nowrap}
+.swarm-cursor{position:fixed;left:0;top:0;pointer-events:none;will-change:transform;transition:transform 420ms cubic-bezier(0.22,1,0.36,1),opacity 180ms ease}
+.swarm-cursor-svg{display:block;filter:drop-shadow(0 2px 6px rgba(0,0,0,0.5))}
+.swarm-cursor-pill{display:inline-flex;align-items:center;gap:6px;margin:2px 0 0 14px;padding:3px 8px;border-radius:999px;background:rgba(10,11,15,0.92);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,0.16);box-shadow:0 6px 20px rgba(0,0,0,0.4);color:#f4f4f5;font:600 11px/1.2 Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;white-space:nowrap}
 .swarm-cursor-dot{width:6px;height:6px;border-radius:999px;flex:0 0 auto}
-.swarm-cursor-status{padding:1px 6px;border-radius:999px;background:rgba(255,255,255,0.08);color:#cbd5e1;font-size:10px;font-weight:500}
-.swarm-cursor-box{position:fixed;pointer-events:none;border-radius:4px;border:1.5px dashed;box-sizing:border-box;background:rgba(255,255,255,0.03);transition:left 220ms cubic-bezier(0.16,1,0.3,1),top 220ms cubic-bezier(0.16,1,0.3,1),width 220ms cubic-bezier(0.16,1,0.3,1),height 220ms cubic-bezier(0.16,1,0.3,1)}
+.swarm-cursor-status{padding:1px 6px;border-radius:999px;background:rgba(255,255,255,0.1);color:#cbd5e1;font-size:10px;font-weight:500}
+.swarm-cursor-box{position:fixed;pointer-events:none;border-radius:6px;border:1.5px dashed;box-sizing:border-box;background:rgba(255,255,255,0.04);transition:left 380ms cubic-bezier(0.22,1,0.36,1),top 380ms cubic-bezier(0.22,1,0.36,1),width 380ms cubic-bezier(0.22,1,0.36,1),height 380ms cubic-bezier(0.22,1,0.36,1);animation:swarm-box-pulse 2s ease-in-out infinite}
+@keyframes swarm-box-pulse{0%,100%{opacity:0.95}50%{opacity:0.4}}
 .swarm-cursor-dims{position:absolute;padding:2px 6px;border-radius:4px;color:#fff;font:600 10px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.4)}
+.swarm-cursor-ripple{position:absolute;left:-6px;top:-6px;width:28px;height:28px;border-radius:999px;border:2.5px solid;pointer-events:none;animation:swarm-ripple 650ms cubic-bezier(0,0,0.2,1) forwards}
+@keyframes swarm-ripple{0%{transform:scale(0.2);opacity:1}100%{transform:scale(2.6);opacity:0}}
+@media (prefers-reduced-motion: reduce){.swarm-cursor,.swarm-cursor-box{transition:none}.swarm-cursor-box,.swarm-cursor-ripple{animation:none}}
 `;
 
 const clean = (v, max = 64) => String(v ?? '').replace(/[\r\n\t]+/g, ' ').replace(CTRL_RE, '').trim().slice(0, max);
@@ -137,7 +141,16 @@ function createCursorLayer(shadowRoot) {
     cursors.clear();
   }
 
-  return { upsertCursor, removeCursor, clearAll };
+  function triggerClick(id) {
+    const entry = cursors.get(clean(id, 48));
+    if (!entry) return;
+    const rip = mk('div', 'swarm-cursor-ripple');
+    rip.style.borderColor = entry.color || '#0D99FF';
+    entry.el.appendChild(rip);
+    setTimeout(() => rip.remove(), 700);
+  }
+
+  return { upsertCursor, removeCursor, clearAll, triggerClick };
 }
     return { createCursorLayer };
   })();
@@ -159,10 +172,12 @@ const STYLES = `.swarm-pins-layer{pointer-events:none;position:fixed;inset:0;z-i
 .swarm-pop-hd{justify-content:space-between;margin-bottom:8px}
 .swarm-pop-title{font-size:12px;font-weight:600;line-height:1.35;margin:0 0 6px;word-break:break-word}
 .swarm-pop-meta{font-size:11px;color:#94a3b8;line-height:1.4;margin:0;word-break:break-word}
-.swarm-badge{font-size:10px;font-weight:600;padding:2px 6px;border-radius:999px;background:rgba(255,255,255,0.08)}
+.swarm-badge{font-size:10px;font-weight:600;padding:2px 6px;border-radius:999px;background:rgba(255,255,255,0.08);font-variant-numeric:tabular-nums}
 .swarm-hud{pointer-events:auto;position:fixed;left:50%;bottom:16px;transform:translateX(-50%);max-width:calc(100vw - 24px);padding:8px 12px;border-radius:14px;background:rgba(10,11,15,0.88);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,0.08);box-shadow:0 12px 32px rgba(0,0,0,0.5);color:#f4f4f5;font-size:12px;z-index:4;justify-content:space-between}
 .swarm-btn{background:rgba(255,255,255,0.08);color:#f4f4f5;border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:4px 8px;font-size:11px;font-weight:600;cursor:pointer}.swarm-btn:hover{background:rgba(255,255,255,0.16)}
-.swarm-hud.is-collapsed .swarm-hud-stats,.swarm-hud.is-collapsed [data-action="reaudit"],.swarm-hud.is-collapsed [data-action="clear"]{display:none}`;
+.swarm-btn:focus-visible{outline:2px solid #38bdf8;outline-offset:2px}
+.swarm-hud.is-collapsed .swarm-hud-stats,.swarm-hud.is-collapsed [data-action="reaudit"],.swarm-hud.is-collapsed [data-action="clear"]{display:none}
+@media (prefers-reduced-motion: reduce){.swarm-pin,.swarm-btn{transition:none}}`;
 const txt = (v, max = 280) => String(v ?? '').replace(/[\r\n\t]+/g, ' ').replace(CTRL_RE, '').slice(0, max);
 const clamp = (n, min, max) => Math.max(min, Math.min(max, Number.isFinite(Number(n)) ? Number(n) : min));
 const posNum = (v) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) && Number.isFinite(Number(v)) && Number(v) > 0;
@@ -187,7 +202,7 @@ function createIssuePins(shadowRoot, callbacks = {}) {
   style.textContent = STYLES;
   const layer = mk('div', 'swarm-pins-layer');
   const hud = mk('div', 'swarm-hud');
-  const statsWrap = mk('div', 'swarm-hud-stats');
+  const statsWrap = mk('div', 'swarm-hud-stats', undefined, { role: 'status', 'aria-live': 'polite' });
   const btnsWrap = mk('div', 'swarm-hud-btns');
   const pills = ['Agentes: 0', 'Abiertos: 0', 'Verificar: 0', 'Verificados: 0'].map((t) => mk('span', 'swarm-badge', t));
   const [agentsPill, openPill, awaitPill, verPill] = pills;
@@ -712,6 +727,7 @@ function mountSwarmOverlay({ doc = globalThis.document, win = globalThis.window,
   return {
     spawnCursors,
     moveCursor,
+    triggerClick: (id) => cursors.triggerClick(id),
     removeCursor: (id) => cursors.removeCursor(id),
     runAudit,
     setTickets,
