@@ -52,6 +52,14 @@ node packages/core/src/cli-bus.mjs
 node packages/cdp-adapter/src/cdp-bridge.mjs --port 9222 --url localhost:5173
 ```
 
+## Adaptador de Escritorio Nativo (Swarm Desktop / OS Mode)
+
+Permite al enjambre de 4 agentes auditar y focalizar ventanas de aplicaciones nativas en Windows (Discord, IDEs, configuraciones, herramientas):
+
+```powershell
+npm run tour:desktop
+```
+
 ## Estructura y Documentación
 
 - **Especificación Canónica & Visión de Producto:** [docs/SWARM_QA_PLATFORM_SPEC.md](docs/SWARM_QA_PLATFORM_SPEC.md)
