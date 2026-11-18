@@ -14,10 +14,12 @@ const STYLES = `.swarm-pins-layer{pointer-events:none;position:fixed;inset:0;z-i
 .swarm-pop-hd{justify-content:space-between;margin-bottom:8px}
 .swarm-pop-title{font-size:12px;font-weight:600;line-height:1.35;margin:0 0 6px;word-break:break-word}
 .swarm-pop-meta{font-size:11px;color:#94a3b8;line-height:1.4;margin:0;word-break:break-word}
-.swarm-badge{font-size:10px;font-weight:600;padding:2px 6px;border-radius:999px;background:rgba(255,255,255,0.08)}
+.swarm-badge{font-size:10px;font-weight:600;padding:2px 6px;border-radius:999px;background:rgba(255,255,255,0.08);font-variant-numeric:tabular-nums}
 .swarm-hud{pointer-events:auto;position:fixed;left:50%;bottom:16px;transform:translateX(-50%);max-width:calc(100vw - 24px);padding:8px 12px;border-radius:14px;background:rgba(10,11,15,0.88);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,0.08);box-shadow:0 12px 32px rgba(0,0,0,0.5);color:#f4f4f5;font-size:12px;z-index:4;justify-content:space-between}
 .swarm-btn{background:rgba(255,255,255,0.08);color:#f4f4f5;border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:4px 8px;font-size:11px;font-weight:600;cursor:pointer}.swarm-btn:hover{background:rgba(255,255,255,0.16)}
-.swarm-hud.is-collapsed .swarm-hud-stats,.swarm-hud.is-collapsed [data-action="reaudit"],.swarm-hud.is-collapsed [data-action="clear"]{display:none}`;
+.swarm-btn:focus-visible{outline:2px solid #38bdf8;outline-offset:2px}
+.swarm-hud.is-collapsed .swarm-hud-stats,.swarm-hud.is-collapsed [data-action="reaudit"],.swarm-hud.is-collapsed [data-action="clear"]{display:none}
+@media (prefers-reduced-motion: reduce){.swarm-pin,.swarm-btn{transition:none}}`;
 const txt = (v, max = 280) => String(v ?? '').replace(/[\r\n\t]+/g, ' ').replace(CTRL_RE, '').slice(0, max);
 const clamp = (n, min, max) => Math.max(min, Math.min(max, Number.isFinite(Number(n)) ? Number(n) : min));
 const posNum = (v) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) && Number.isFinite(Number(v)) && Number(v) > 0;
@@ -42,7 +44,7 @@ export function createIssuePins(shadowRoot, callbacks = {}) {
   style.textContent = STYLES;
   const layer = mk('div', 'swarm-pins-layer');
   const hud = mk('div', 'swarm-hud');
-  const statsWrap = mk('div', 'swarm-hud-stats');
+  const statsWrap = mk('div', 'swarm-hud-stats', undefined, { role: 'status', 'aria-live': 'polite' });
   const btnsWrap = mk('div', 'swarm-hud-btns');
   const pills = ['Agentes: 0', 'Abiertos: 0', 'Verificar: 0', 'Verificados: 0'].map((t) => mk('span', 'swarm-badge', t));
   const [agentsPill, openPill, awaitPill, verPill] = pills;

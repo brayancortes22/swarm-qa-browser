@@ -103,6 +103,7 @@
     switch (msg?.type) {
       case 'spawn_cursors': return { ok: true, count: state.overlay.spawnCursors(cmd.cursors ? cmd : (Array.isArray(cmd.agents) ? { cursors: cmd.agents, clear: cmd.clear } : cmd)) };
       case 'move_cursor': state.overlay.moveCursor(cmd.cursor ?? cmd); return { ok: true };
+      case 'trigger_click': state.overlay.triggerClick?.(cmd.id ?? msg.id); return { ok: true };
       case 'remove_cursor': state.overlay.removeCursor(cmd.id ?? msg.id); return { ok: true };
       case 'set_tickets': {
         const list = Array.isArray(cmd.tickets) ? cmd.tickets : (Array.isArray(msg.tickets) ? msg.tickets : []);
