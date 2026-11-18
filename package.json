@@ -13,7 +13,9 @@
     "generate:key": "node scripts/generate-extension-key.mjs",
     "start:bus": "node packages/core/src/cli-bus.mjs",
     "start:mcp": "node packages/mcp-server/src/mcp-server.mjs",
-    "start:cdp": "node packages/cdp-adapter/src/cdp-bridge.mjs"
+    "start:cdp": "node packages/cdp-adapter/src/cdp-bridge.mjs",
+    "tour:desktop": "node scripts/desktop-swarm-tour.mjs",
+    "tour:heal": "node scripts/autonomous-swarm-healing.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"
