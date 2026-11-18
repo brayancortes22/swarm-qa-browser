@@ -1,6 +1,6 @@
 import { buildKeyEvent, clean } from './helpers.js';
 
-const OVERLAY_CMDS = new Set(['spawn_cursors', 'move_cursor', 'remove_cursor', 'set_tickets', 'update_summary']);
+const OVERLAY_CMDS = new Set(['spawn_cursors', 'move_cursor', 'trigger_click', 'remove_cursor', 'set_tickets', 'update_summary']);
 
 export function createBusCommandHandler(ctx) {
   const { authorizedTabs, cdp, tabMsg, hasHostPermission, syncTabAfterNav, waitTabLoad, runAuditAndCache, sendWs, metaOf } = ctx;
