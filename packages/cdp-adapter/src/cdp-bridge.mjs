@@ -140,6 +140,8 @@ export async function connectCdpBridge({ cdpUrl, cdpPort = 9222, targetId, urlIn
       return evalCtrl('function(t, p, s, vw) { this.setTickets(t, p, { viewportWidth: vw }); this.updateSummary(s); return { ok: true, count: t.length }; }', tickets, a.pathname ?? null, summary, vw);
     },
     update_summary: async (a) => (await evalCtrl('function(s) { this.updateSummary(s); }', a.summary ?? a), { ok: true }),
+    apply_patch: async (a) => ({ ok: await evalCtrl('function(p) { return this.applyPatch?.(p) ?? false; }', a.patch ?? a) }),
+    revert_patch: async (a) => ({ ok: await evalCtrl('function(id) { return this.revertPatch?.(id) ?? false; }', a.id ?? a) }),
     get_console_network: async (a) => { await mountQueue; const entries = state.consoleNet.slice(); if (a.clear) state.consoleNet.length = 0; return { entries, untrustedPageData: true }; },
     ...createInputHandlers({ cdp, state, tabId, evalCtx, waitReady, waitLoad, injectOverlay, sendBus: sendToBus })
   };
