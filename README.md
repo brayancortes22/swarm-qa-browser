@@ -52,13 +52,19 @@ node packages/core/src/cli-bus.mjs
 node packages/cdp-adapter/src/cdp-bridge.mjs --port 9222 --url localhost:5173
 ```
 
-## Adaptador de Escritorio Nativo (Swarm Desktop / OS Mode)
+## Plan Maestro: Swarm QA 2.0 (Ecosistema Integrado)
 
-Permite al enjambre de 4 agentes auditar y focalizar ventanas de aplicaciones nativas en Windows (Discord, IDEs, configuraciones, herramientas):
+Hemos unificado la visión en un plan detallado en [PLAN.md](file:///c:/Users/NITRO%20ACER/Desktop/proyectos%20con%20ia/swarm-qa-browser/PLAN.md), el cual cubre:
+- **Telemetría espacial y reconstrucción visual (Swarm Rebuild).**
+- **Control de escritorio OS Mode con telemetría en vivo.**
+- **Seguridad autónoma y *kill-switch* de agentes.**
+- **Bucle de auto-sanación con HMR.**
 
-```powershell
-npm run tour:desktop
-```
+## Estado del Enjambre
+- **Fase actual:** Fase 1 (Telemetría de cursores y clics).
+- **Cobertura:** Browser (CDP) + Escritorio (Nativo Windows).
+- **Estatus:** Operativo y probado en `bscl-music.vercel.app`.
+
 
 ## Estructura y Documentación
 
