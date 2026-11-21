@@ -113,11 +113,21 @@ export async function openBrowserSession({ url, registryPath, executablePath, he
     if (!userDataDir) rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   };
   const child = spawn(executable, browserArgs({ url: target.href, userDataDir: profile, headless, width, height }), {
-    stdio: 'ignore'
+    stdio: ['ignore', 'ignore', 'pipe']
   });
-  // The LAUNCHER process exiting is not the same as the browser dying: with `--headless=new` newer
-  // Chromium forks a detached browser process and the one we spawned exits 0 right away. So the
-  // remote-debugging endpoint — not this PID — is the source of truth for "is the browser up?".
+  // The browser prints "DevTools listening on ws://127.0.0.1:PORT/devtools/browser/..." to stderr once
+  // it is ready. That is the signal Playwright and Puppeteer use: it survives `--headless=new` forking
+  // the real browser (the child inherits this stderr pipe), unlike the launcher PID or a fixed port.
+  let endpointFromStderr = '';
+  let stderrTail = '';
+  child.stderr?.on('data', (chunk) => {
+    const text = String(chunk);
+    stderrTail = (stderrTail + text).slice(-2000);
+    const match = /DevTools listening on (ws:\/\/\S+)/.exec(text);
+    if (match && !endpointFromStderr) endpointFromStderr = match[1];
+  });
+  // The LAUNCHER process exiting is not the same as the browser dying: with `--headless=new` the
+  // spawned process can exit 0 while the real browser keeps running.
   let launcherExit = null;
   child.once('exit', (code) => (launcherExit = code ?? 0));
   child.once('error', (err) => (launcherExit = err.message));
@@ -141,22 +151,28 @@ export async function openBrowserSession({ url, registryPath, executablePath, he
   let port = 0;
   let browserWsUrl = '';
   try {
-    // Discover the port the browser actually bound (written to the profile's DevToolsActivePort),
-    // then poll the debug endpoint for the page — regardless of the launcher PID. The forked
-    // headless browser writes that file too, so a clean launcher exit is not a failure on its own.
+    // Learn the debug endpoint the browser actually bound: prefer the "DevTools listening" line on
+    // stderr, fall back to the profile's DevToolsActivePort file. Either way it is the real (possibly
+    // forked) browser's endpoint, so a clean launcher exit is not a failure on its own.
     const deadline = Date.now() + STARTUP_TIMEOUT_MS;
     while (!port) {
       if (Date.now() > deadline) {
         const detail =
           launcherExit === null
             ? 'it never reported a debugging port'
-            : `launcher exited (${launcherExit}) and no debugging port was reported`;
+            : `launcher exited (${launcherExit}) and no debugging port was reported${stderrTail ? `. Last output: ${stderrTail.slice(-200)}` : ''}`;
         throw new Error(`Timed out starting "${executable}": ${detail}`);
       }
-      try {
-        port = readDevToolsPort(profile);
-      } catch {
-        await sleep(POLL_MS);
+      if (endpointFromStderr) {
+        browserWsUrl = endpointFromStderr;
+        port = Number(new URL(endpointFromStderr).port) || 0;
+      }
+      if (!port) {
+        try {
+          port = readDevToolsPort(profile);
+        } catch {
+          await sleep(POLL_MS);
+        }
       }
     }
     let page = null;
