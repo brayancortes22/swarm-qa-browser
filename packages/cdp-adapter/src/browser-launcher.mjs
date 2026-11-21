@@ -64,8 +64,9 @@ export function browserArgs({ url, userDataDir, headless = false, width = 1440, 
     // process has nothing to talk to. These flags are the standard fix and are headless-only so a
     // real desktop window keeps hardware acceleration.
     ...(headless ? ['--headless=new', '--disable-dev-shm-usage', '--disable-gpu'] : []),
-    // Chromium refuses to start its sandbox as root (containers, CI).
-    ...(isRoot ? ['--no-sandbox'] : []),
+    // Chromium's sandbox needs a SUID helper that containers and CI runners usually lack; a headless
+    // QA launch and running as root both hit that, so disable it there. A real desktop window keeps it.
+    ...(headless || isRoot ? ['--no-sandbox'] : []),
     url
   ];
 }
