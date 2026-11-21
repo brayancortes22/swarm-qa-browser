@@ -3,6 +3,27 @@ import { buildKeyEvent, clean } from './helpers.js';
 export function createBusCommandHandler(ctx) {
   const { authorizedTabs, cdp, tabMsg, hasHostPermission, syncTabAfterNav, waitTabLoad, runAuditAndCache, sendWs, metaOf } = ctx;
 
+  /**
+   * Resolves a selector to viewport coordinates once the element has stopped moving: a page that is
+   * still smooth-scrolling would shift it after the first measurement and the pointer would miss.
+   */
+  async function settledTarget(tabId, selector, label) {
+    const resolve = async (scroll) => {
+      const r = await tabMsg(tabId, { type: 'resolve_rect', selector, scroll });
+      if (!r?.ok || !Number.isFinite(r.x) || !Number.isFinite(r.y)) throw new Error(r?.error || `Invalid ${label} target`);
+      return r;
+    };
+    let target = null;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const before = await resolve(true);
+      // Measure again WITHOUT scrolling: re-scrolling first would hide an ongoing scroll animation.
+      await new Promise((done) => setTimeout(done, 60));
+      target = await resolve(false);
+      if (Math.abs(before.x - target.x) < 0.5 && Math.abs(before.y - target.y) < 0.5) return target;
+    }
+    return target;
+  }
+
   const COMMANDS = {
     run_audit: runAuditAndCache,
     async get_console_network(tabId, entry, cmd = {}) {
@@ -31,9 +52,9 @@ export function createBusCommandHandler(ctx) {
     },
     async hover(tabId, _entry, cmd) {
       const r = cmd.selector
-        ? await tabMsg(tabId, { type: 'resolve_rect', selector: cmd.selector })
+        ? await settledTarget(tabId, cmd.selector, 'hover')
         : { ok: true, x: Number(cmd.x), y: Number(cmd.y), selector: null };
-      if (!r?.ok || !Number.isFinite(r.x) || !Number.isFinite(r.y)) throw new Error(r?.error || 'Invalid hover target');
+      if (!Number.isFinite(r.x) || !Number.isFinite(r.y)) throw new Error('Invalid hover target');
       await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: r.x, y: r.y });
       return { hovered: true, x: r.x, y: r.y, selector: r.selector };
     },
@@ -61,9 +82,9 @@ export function createBusCommandHandler(ctx) {
     },
     async click(tabId, _entry, cmd) {
       const r = cmd.selector
-        ? await tabMsg(tabId, { type: 'resolve_rect', selector: cmd.selector })
+        ? await settledTarget(tabId, cmd.selector, 'click')
         : { ok: true, x: Number(cmd.x), y: Number(cmd.y), selector: null };
-      if (!r?.ok || !Number.isFinite(r.x) || !Number.isFinite(r.y)) throw new Error(r?.error || 'Invalid click target');
+      if (!Number.isFinite(r.x) || !Number.isFinite(r.y)) throw new Error('Invalid click target');
       const button = cmd.button || 'left',
         clickCount = Number(cmd.clickCount) || 1;
       for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {

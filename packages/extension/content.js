@@ -77,12 +77,12 @@
     };
   }
 
-  function resolveTarget(selector, focus = false) {
+  function resolveTarget(selector, focus = false, scroll = true) {
     const f = factory(),
       { el, error } = querySafe(selector);
     if (error) return { ok: false, error };
     if (!el || isProtected(el)) return { ok: false, error: `Element not found: ${clean(selector, 120)}` };
-    el.scrollIntoView?.({ block: 'center', inline: 'center', behavior: 'instant' });
+    if (scroll) el.scrollIntoView?.({ block: 'center', inline: 'center', behavior: 'instant' });
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return { ok: false, error: `Element has zero bounding box: ${clean(selector, 120)}` };
     if (focus) el.focus?.({ preventScroll: true });
@@ -166,7 +166,7 @@
       state.overlay = null;
       return { ok: true };
     }
-    if (msg?.type === 'resolve_rect') return resolveTarget(msg.selector, Boolean(msg.focus));
+    if (msg?.type === 'resolve_rect') return resolveTarget(msg.selector, Boolean(msg.focus), msg.scroll !== false);
     if (msg?.type === 'fill_element') return fillElement(msg.selector, msg.value, msg.clear);
     if (!state.overlay) return { ok: false, error: 'Overlay is not mounted on this tab' };
     if (msg?.type === 'clear_console') {

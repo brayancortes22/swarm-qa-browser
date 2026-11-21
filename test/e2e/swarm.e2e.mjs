@@ -263,6 +263,19 @@ try {
   await page.waitForFunction(() => location.hash === '#precios');
   step('trusted click navigated the page; read-only role was refused');
 
+  // Regression: a click issued while the page is still smooth-scrolling must wait for the target to settle.
+  for (let round = 0; round < 4; round += 1) {
+    await page.evaluate(() => {
+      history.replaceState(null, '', location.pathname + location.search);
+      window.scrollTo({ top: 0, behavior: 'instant' });
+      document.querySelector('#contacto').scrollIntoView({ behavior: 'smooth' });
+    });
+    await page.waitForTimeout(120);
+    await callTool('swarm_click', { agentId: 'interactive', selector: '.hero-cta a[href="#precios"]' });
+    await page.waitForFunction(() => location.hash === '#precios', null, { timeout: 3000 });
+  }
+  step('clicks land on their target even while the page is smooth-scrolling (4/4)');
+
   // AI-driven functional test: observe → act → verify → report.
   process.env.SWARM_QA_DIR = join(tmp, 'qa');
   const outline = await callTool('swarm_snapshot', { scope: 'page', max: 200 });

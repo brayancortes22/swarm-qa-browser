@@ -64,6 +64,33 @@ export async function querySafeNode(cdp, evalCtx, selector, waitReady) {
   return { nodeId, meta };
 }
 
+const SETTLE_INTERVAL_MS = 60;
+const SETTLE_MAX_TRIES = 30;
+
+/**
+ * Scrolls a node into view and returns its center once it has stopped moving. A page that is
+ * still smooth-scrolling (anchor navigation, `scroll-behavior: smooth`) keeps shifting the element
+ * after it is measured, so a pointer event aimed at the first reading would miss it.
+ */
+export async function settledCenter(cdp, nodeId, purpose = 'pointer') {
+  const measure = async () => {
+    const model = (await cdp.send('DOM.getBoxModel', { nodeId }))?.model;
+    const pts = model?.content || model?.border;
+    if (!Array.isArray(pts) || pts.length < 8) throw new Error(`Missing box model for ${purpose} target`);
+    return { x: (pts[0] + pts[2] + pts[4] + pts[6]) / 4, y: (pts[1] + pts[3] + pts[5] + pts[7]) / 4 };
+  };
+  let center = null;
+  for (let attempt = 0; attempt < SETTLE_MAX_TRIES; attempt += 1) {
+    await cdp.send('DOM.scrollIntoViewIfNeeded', { nodeId }).catch(() => {});
+    const before = await measure();
+    // Measure twice WITHOUT scrolling in between: re-scrolling first would hide an ongoing animation.
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_INTERVAL_MS));
+    center = await measure();
+    if (Math.abs(before.x - center.x) < 0.5 && Math.abs(before.y - center.y) < 0.5) return center;
+  }
+  return center;
+}
+
 /** Creates viewport, pointer, keyboard, and navigation command handlers for a CDP session. */
 export function createInputHandlers({ cdp, state, tabId, evalCtx, waitReady, waitLoad, injectOverlay, sendBus }) {
   const emitRoute = () =>
@@ -98,12 +125,7 @@ export function createInputHandlers({ cdp, state, tabId, evalCtx, waitReady, wai
       let y = Number(a.y);
       if (a.selector) {
         const { nodeId } = await querySafeNode(cdp, evalCtx, a.selector, waitReady);
-        await cdp.send('DOM.scrollIntoViewIfNeeded', { nodeId }).catch(() => {});
-        const model = (await cdp.send('DOM.getBoxModel', { nodeId }))?.model;
-        const pts = model?.content || model?.border;
-        if (!Array.isArray(pts) || pts.length < 8) throw new Error('Missing box model for hover target');
-        x = (pts[0] + pts[2] + pts[4] + pts[6]) / 4;
-        y = (pts[1] + pts[3] + pts[5] + pts[7]) / 4;
+        ({ x, y } = await settledCenter(cdp, nodeId, 'hover'));
       } else if (!Number.isFinite(x) || !Number.isFinite(y)) {
         throw new Error('hover requires selector or coordinates');
       }
@@ -138,12 +160,7 @@ export function createInputHandlers({ cdp, state, tabId, evalCtx, waitReady, wai
         y = Number(a.y);
       if (a.selector) {
         const { nodeId } = await querySafeNode(cdp, evalCtx, a.selector, waitReady);
-        await cdp.send('DOM.scrollIntoViewIfNeeded', { nodeId }).catch(() => {});
-        const m = (await cdp.send('DOM.getBoxModel', { nodeId }))?.model,
-          pts = m?.content || m?.border;
-        if (!Array.isArray(pts) || pts.length < 8) throw new Error('Missing box model for click target');
-        x = (pts[0] + pts[2] + pts[4] + pts[6]) / 4;
-        y = (pts[1] + pts[3] + pts[5] + pts[7]) / 4;
+        ({ x, y } = await settledCenter(cdp, nodeId, 'click'));
       } else {
         await waitReady();
         if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('click requires selector or coordinates');
