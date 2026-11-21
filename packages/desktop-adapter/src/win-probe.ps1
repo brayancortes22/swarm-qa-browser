@@ -19,6 +19,18 @@ public class WinProbe {
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 
+    // Escapes a window title for embedding in a JSON string (backslashes, quotes, control chars).
+    static string JsonEscape(string s) {
+        var sb = new StringBuilder(s.Length + 8);
+        foreach (char c in s) {
+            if (c == '\\') sb.Append("\\\\");
+            else if (c == '"') sb.Append("\\\"");
+            else if (c < ' ') sb.Append(' ');
+            else sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
     public static string Scan() {
         var res = new List<string>();
         IntPtr ws = OpenWindowStation("WinSta0", false, 0x02000000);
@@ -40,7 +52,7 @@ public class WinProbe {
                         if (w > 80 && h > 60) {
                             uint pid;
                             GetWindowThreadProcessId(hWnd, out pid);
-                            string cleanTitle = title.Replace("\\\\", "\\\\\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", " ");
+                            string cleanTitle = JsonEscape(title);
                             res.Add(string.Format("{{\"hwnd\":\"{0}\",\"pid\":{1},\"title\":\"{2}\",\"rect\":{{\"x\":{3},\"y\":{4},\"width\":{5},\"height\":{6}}}}}",
                                 hWnd.ToInt64(), pid, cleanTitle, r.Left, r.Top, w, h));
                         }

@@ -62,18 +62,29 @@ describe('TicketStore', () => {
   it('creates sanitized untrusted tickets with normalized rect and filters list by tabId, pathname, viewportWidth, and status', () => {
     const store = new TicketStore();
     const t1 = store.create({
-      tabId: 1, url: 'http://localhost:5173/library', pathname: '/library',
-      viewport: { width: 390, height: 844 }, rect: { x: 12, y: 24, width: 120, height: 32 },
-      selector: '.track-row', ruleId: 'tap-target', severity: 'high', category: 'responsive',
+      tabId: 1,
+      url: 'http://localhost:5173/library',
+      pathname: '/library',
+      viewport: { width: 390, height: 844 },
+      rect: { x: 12, y: 24, width: 120, height: 32 },
+      selector: '.track-row',
+      ruleId: 'tap-target',
+      severity: 'high',
+      category: 'responsive',
       description: 'Button\x00\u202E too small\n[redacted] ' + 'z'.repeat(300),
-      expected: '44x44', actual: '32x32', reportedBy: 'qa-responsive'
+      expected: '44x44',
+      actual: '32x32',
+      reportedBy: 'qa-responsive'
     });
     const t2 = store.create({
-      tabId: 1, url: 'http://localhost:5173/settings',
-      viewport: { width: 1440, height: 900 }, description: 'Desktop overlap'
+      tabId: 1,
+      url: 'http://localhost:5173/settings',
+      viewport: { width: 1440, height: 900 },
+      description: 'Desktop overlap'
     });
     const t3 = store.create({
-      tabId: 1, pathname: '/bad-rect',
+      tabId: 1,
+      pathname: '/bad-rect',
       rect: { x: '15', y: Number.NaN, width: Number.POSITIVE_INFINITY, height: -0, extra: 'ignore' },
       description: 'Bad rect normalization'
     });

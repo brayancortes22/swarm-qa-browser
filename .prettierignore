@@ -1,0 +1,9 @@
+node_modules/
+overlay.bundle.js
+package-lock.json
+.agents/
+.specify/
+.qa/
+.swarm/
+docs/superpowers/
+*.md

@@ -1,75 +1,208 @@
 # Swarm QA Browser
 
-Producto independiente (**Extensión Chrome MV3 + Overlay Multi-Cursor + Servidor MCP + Adaptador CDP**) para que múltiples agentes de IA (**Antigravity 2.0**, Cursor, Claude Code, Codex) auditen interfaces web en vivo con cursores identificados por rol, registren hallazgos anclados al DOM, esperen correcciones de código y re-verifiquen automáticamente tras HMR.
+Un enjambre de cursores de IA que audita páginas web **en vivo** y una IA que **hace pruebas por sí misma**, tanto en la web como en todo el PC. Decenas de agentes se mueven sobre la página real, seleccionan elementos como en una herramienta de diseño, registran hallazgos, aplican parches y vuelven a verificar. El agente ve la pantalla, usa el ratón y el teclado reales, comprueba resultados y entrega un informe. Todo se controla desde cualquier cliente MCP (Antigravity, Claude Code, Cursor, Codex) o desde la línea de comandos.
 
----
+![Tour de reconstrucción: el enjambre vuelve a construir la página capa por capa](docs/media/tour.png)
 
-## Instalación y Pruebas
+![Auditoría: cursores con rol, pines de severidad y barra de control](docs/media/audit.png)
 
-```powershell
-cd swarm-qa-browser
+## Qué hace
+
+| Capacidad | Detalle |
+| :--- | :--- |
+| **Enjambre en tiempo real** | Hasta 32 cursores animados a la frecuencia de refresco de la pantalla, con trayectorias curvas, cajas de selección con tiradores y medidas, reglas y guías. |
+| **Tour de reconstrucción** | Oculta las capas de la página y el enjambre las reconstruye una a una (texto "tecleado", imágenes con marcador gris, scroll automático). Es reversible: la página queda idéntica al terminar o al detenerlo. |
+| **Auditoría del DOM** | Desbordes horizontales, solapamientos, nombres accesibles, etiquetas de formulario, imágenes rotas, áreas táctiles menores de 44 px y errores de consola o red. |
+| **Tickets con ciclo de vida** | `open → claimed → awaiting_reverify → verified / reopened / escalated` (máximo 3 rondas), con pines que siguen a su elemento al hacer scroll. |
+| **Auto-sanación verificada** | Aplica un parche reversible, re-audita y solo lo conserva si el hallazgo desaparece; si no, lo revierte. |
+| **Interacción real** | Clics y teclado `isTrusted: true`, emulación de viewport y navegación, protegidos por un candado por pestaña. |
+| **Pruebas dirigidas por IA** | El agente ve la página (captura o esquema), actúa por texto visible ("haz clic en *Entrar*"), espera condiciones, comprueba resultados y genera un informe de aprobado/fallido. |
+| **Control total del PC** | Captura de pantalla, ratón y teclado reales, ventanas y apertura de programas, en Windows y Linux (X11). Sin restricciones. |
+
+## Modo automático: una orden y el enjambre aparece
+
+No hay que instalar, emparejar ni aceptar nada. Una sola orden arranca el bus, abre un navegador en la web que quieras y deja el enjambre conectado:
+
+```bash
 npm install
-npm run build:overlay
-npm test
+npm run swarm -- open https://tu-sitio.com --tour      # o --audit
 ```
 
-## Cómo Cargar la Extensión en Chrome (Modo Desarrollador)
+Desde un agente por MCP es una sola herramienta: `swarm_open { url, tour: true }`. Si tienes la extensión instalada en tu Chrome, `swarm_open` abre la pestaña ahí (con tus sesiones); si no, lanza un navegador propio (Chrome, Edge, Brave o Chromium; `SWARM_BROWSER_PATH` para elegir otro).
 
-1. Ejecuta `npm run build:overlay` para asegurar que `packages/extension/overlay.bundle.js` esté actualizado.
-2. Abre `chrome://extensions` y activa **Modo de desarrollador**.
-3. Pulsa **Cargar descomprimida** y selecciona `swarm-qa-browser/packages/extension`.
-4. Abre tu aplicación web (ej. `http://localhost:5173`), haz clic en el icono **Swarm QA Browser**, lee y acepta el consentimiento explícito de depuración y pulsa **Habilitar permisos y arrancar enjambre**.
-   - Chrome mostrará la barra *"started debugging this browser"* mientras el enjambre emula `390×844` o envía clics reales (`isTrusted: true`).
-   - Puedes detener la sesión y revocar permisos en cualquier momento con **Desconectar y revocar depuración**.
+## Página de demostración
 
-## Cómo Conectar Cualquier Agente por MCP (`stdio`)
+```bash
+npm install
+npm run demo
+```
 
-Registra el servidor MCP en tu cliente (Antigravity `mcp_config.json`, Claude Code, Cursor):
+Abre <http://127.0.0.1:5173>. En la barra inferior pulsa **Tour** o **Auditar**. Añade `?tour=1` para arrancar el tour al cargar, o `?agents=24&speed=2` para cambiar el enjambre.
+
+## Uso con tu propia aplicación
+
+Hay dos formas de conectar una pestaña al bus local. En ambas el agente usa las mismas herramientas.
+
+### A. Extensión de Chrome (tu navegador, con tus sesiones)
+
+1. `npm install` (genera `packages/extension/overlay.bundle.js`).
+2. En `chrome://extensions` activa el modo de desarrollador, pulsa **Cargar descomprimida** y elige `packages/extension`. Esto se hace una sola vez; es un requisito de Chrome.
+
+A partir de ahí no hay más pasos: la extensión se conecta sola al bus (reintenta cada 30 s) y tiene acceso a todos los sitios. El agente abre o engancha pestañas con `swarm_open`, `swarm_browser_tabs` y `swarm_attach_tab`. También puedes pulsar **Arrancar enjambre en esta pestaña** en el icono de la extensión. Chrome muestra la barra *"started debugging this browser"* mientras el enjambre está activo; esa barra es del navegador y no se puede quitar desde la extensión.
+
+### B. Puente CDP (Chromium con depuración remota, webviews, CI)
+
+```bash
+chrome --remote-debugging-port=9222 http://localhost:5173
+npm run start:bus
+npm run start:cdp -- --port 9222 --url localhost:5173
+```
+
+## Conectar un agente por MCP
+
+Registra el servidor en tu cliente MCP con la ruta absoluta de tu copia del repositorio:
 
 ```json
 {
   "mcpServers": {
     "swarm-qa-browser": {
       "command": "node",
-      "args": ["c:/Users/NITRO ACER/Desktop/proyectos con ia/swarm-qa-browser/packages/mcp-server/src/mcp-server.mjs"]
+      "args": ["/ruta/a/swarm-qa-browser/packages/mcp-server/src/mcp-server.mjs"]
     }
   }
 }
 ```
 
-### Herramientas MCP Disponibles (18)
+Si no hay un bus en ejecución, el servidor MCP arranca uno embebido.
+
+### Herramientas MCP (46)
 
 | Categoría | Herramientas |
 | :--- | :--- |
-| **Sesión y Cursores** | `swarm_session_status`, `swarm_select_tab`, `swarm_spawn_cursors`, `swarm_move_cursor` |
-| **Candado e Interacción** | `swarm_acquire_lock`, `swarm_release_lock`, `swarm_set_viewport`, `swarm_click`, `swarm_fill`, `swarm_press_key`, `swarm_navigate` |
-| **Auditoría y Bucle QA ↔ Dev** | `swarm_run_dom_audit`, `swarm_report_finding`, `swarm_list_findings`, `swarm_claim_findings`, `swarm_mark_fixed`, `swarm_verify_finding`, `swarm_await_event` |
+| Arranque automático | `swarm_open`, `swarm_browser_tabs`, `swarm_attach_tab`, `swarm_close_browser` |
+| Sesión | `swarm_session_status`, `swarm_select_tab`, `swarm_await_event` |
+| Enjambre | `swarm_configure_swarm`, `swarm_start_tour`, `swarm_stop_tour`, `swarm_spawn_cursors`, `swarm_move_cursor` |
+| Orquestación | `swarm_post_message`, `swarm_apply_fix` |
+| Ver la página | `swarm_screenshot`, `swarm_snapshot` |
+| Actuar en la página | `swarm_click`, `swarm_hover`, `swarm_scroll`, `swarm_fill`, `swarm_press_key`, `swarm_navigate`, `swarm_set_viewport`, `swarm_acquire_lock`, `swarm_release_lock` |
+| Verificar | `swarm_wait_for`, `swarm_expect`, `swarm_test_report` |
+| Auditoría y tickets | `swarm_run_dom_audit`, `swarm_report_finding`, `swarm_list_findings`, `swarm_claim_findings`, `swarm_mark_fixed`, `swarm_verify_finding`, `swarm_heal_findings` |
+| Todo el PC | `swarm_desktop_status`, `swarm_desktop_screenshot`, `swarm_desktop_list_windows`, `swarm_desktop_focus_window`, `swarm_desktop_move`, `swarm_desktop_click`, `swarm_desktop_drag`, `swarm_desktop_scroll`, `swarm_desktop_type`, `swarm_desktop_key`, `swarm_desktop_open` |
 
-## Adaptador CDP Directo (Webviews / Chromium Local)
+## Orquestación: un agente dirige al enjambre
 
-```powershell
-node packages/core/src/cli-bus.mjs
-node packages/cdp-adapter/src/cdp-bridge.mjs --port 9222 --url localhost:5173
+Un agente orquestador (el modelo que uses por MCP) puede dirigir el trabajo completo y dejarlo a la vista en la **bitácora** de la página:
+
+1. **Instruye** al equipo con `swarm_post_message` y reparte los cursores con rol.
+2. **Los revisores auditan** (`swarm_run_dom_audit`): cada rol anota sus hallazgos en la bitácora y se crean los tickets.
+3. **El orquestador lee el informe** (`swarm_list_findings`) y **decide** ticket a ticket:
+   - receta automática → `swarm_heal_findings`;
+   - corrección propia → `swarm_apply_fix { ticketId, selector, declarations }`, que se verifica con una re-auditoría y se revierte si no funciona;
+   - tickets derivados de la misma causa → `swarm_mark_fixed`, que los re-audita;
+   - lo que no se puede arreglar en la página → queda abierto.
+4. **Ordena rehacer la página** capa a capa con `swarm_start_tour` y pide una auditoría final.
+
+## Pruebas dirigidas por la IA
+
+El agente sigue el ciclo **ver → actuar → comprobar → informar**. Un ejemplo de lo que puede pedir un agente:
+
+```text
+swarm_snapshot                       → qué hay en la página (enlaces, botones, campos y sus valores)
+swarm_fill   { text: "Correo", value: "ana@example.com" }   → rellena el campo por su etiqueta
+swarm_click  { text: "Entrar" }                             → clic real sobre el botón con ese texto
+swarm_expect { text: "Hola, Ana", description: "Saluda al usuario", reportOnFail: true }
+swarm_test_report { name: "Inicio de sesión" }              → .qa/test-report-inicio-de-sesion.json
 ```
 
-## Plan Maestro: Swarm QA 2.0 (Ecosistema Integrado)
+- `swarm_expect` reintenta hasta que se cumple o vence el tiempo. Comprueba visibilidad, texto, valor, número de elementos, URL y título.
+- Con `reportOnFail`, un fallo se convierte en un ticket `P1` con su pin en la página.
+- El informe lista cada acción y cada comprobación. Los valores escritos no se guardan (solo su longitud).
 
-Hemos unificado la visión en un plan detallado en [PLAN.md](file:///c:/Users/NITRO%20ACER/Desktop/proyectos%20con%20ia/swarm-qa-browser/PLAN.md), el cual cubre:
-- **Telemetría espacial y reconstrucción visual (Swarm Rebuild).**
-- **Control de escritorio OS Mode con telemetría en vivo.**
-- **Seguridad autónoma y *kill-switch* de agentes.**
-- **Bucle de auto-sanación con HMR.**
+## Control de todo el PC
 
-## Estado del Enjambre
-- **Fase actual:** Fase 1 (Telemetría de cursores y clics).
-- **Cobertura:** Browser (CDP) + Escritorio (Nativo Windows).
-- **Estatus:** Operativo y probado en `bscl-music.vercel.app`.
+Las herramientas `swarm_desktop_*` dan al agente la pantalla, el ratón y el teclado del equipo:
 
+```text
+swarm_desktop_screenshot                    → imagen de la pantalla (sus píxeles son coordenadas de clic)
+swarm_desktop_open  { target: "notepad.exe" }
+swarm_desktop_click { x: 640, y: 380 }
+swarm_desktop_type  { text: "Hola desde el enjambre" }
+swarm_desktop_key   { keys: "ctrl+s" }
+```
 
-## Estructura y Documentación
+| Sistema | Requisitos |
+| :--- | :--- |
+| Windows | Ninguno (usa PowerShell, incluido en el sistema). |
+| Linux (X11) | `sudo apt-get install -y xdotool imagemagick`. Wayland no está soportado. |
+| macOS | No soportado. |
 
-- **Especificación Canónica & Visión de Producto:** [docs/SWARM_QA_PLATFORM_SPEC.md](docs/SWARM_QA_PLATFORM_SPEC.md)
-- Arquitectura y seguridad: [docs/architecture.md](docs/architecture.md)
-- Especificación inicial: [docs/superpowers/specs/2026-11-17-swarm-qa-browser-design.md](docs/superpowers/specs/2026-11-17-swarm-qa-browser-design.md)
-- Plan de tareas: [docs/superpowers/plans/2026-11-17-swarm-qa-browser-plan.md](docs/superpowers/plans/2026-11-17-swarm-qa-browser-plan.md)
-- Checklists: [security.md](docs/checklists/security.md), [ux.md](docs/checklists/ux.md), [tests.md](docs/checklists/tests.md)
+> **Sin salvaguardas, a propósito.** No hay interruptor de activación, lista de ventanas permitidas ni límite de acciones. Quien pueda llamar al servidor MCP controla el equipo igual que una persona sentada delante: puede abrir programas, escribir en cualquier ventana y ver todo lo que hay en pantalla. Conecta el servidor solo a agentes en los que confíes.
+
+## Línea de comandos
+
+Con un bus en ejecución y una pestaña conectada:
+
+```bash
+npm run swarm -- open https://tu-sitio.com --tour   # arranca todo y deja el enjambre en esa web
+npm run swarm -- status          # pestañas conectadas y tickets
+npm run swarm -- tour --agents 18 --speed 2
+npm run swarm -- audit --follow  # audita y crea tickets; --follow hace scroll hasta cada hallazgo
+npm run swarm -- heal            # parchea, re-audita y guarda .qa/heal-report.json y .qa/patches.json
+npm run swarm -- watch           # eventos del bus en directo
+```
+
+Los parches de `heal` solo viven en la página abierta. `.qa/patches.json` contiene el cambio exacto para llevarlo al código fuente.
+
+## Desarrollo
+
+```bash
+npm test                   # 63 pruebas unitarias y de integración (node:test + jsdom)
+npm run test:e2e           # flujo completo en Chromium real; necesita Playwright
+npm run test:e2e:desktop   # ratón y teclado reales sobre una ventana visible
+npm run lint
+npm run format
+```
+
+Para la prueba E2E: `npm i -D playwright && npx playwright install chromium`. Detalles en [docs/testing.md](docs/testing.md).
+
+## Estructura
+
+```text
+packages/
+  core/             Bus local (HTTP + WebSocket + SSE), tickets, candados, emparejamiento, parches
+  overlay/          Motor del enjambre: cursores, selección, reglas, tour, auditor, pines, HUD
+  mcp-server/       Servidor MCP por stdio (46 herramientas)
+  extension/        Extensión Chrome MV3 (chrome.debugger, consentimiento, emparejamiento)
+  cdp-adapter/      Puente CDP para Chromium con depuración remota
+  desktop-adapter/  Control del PC: pantalla, ratón, teclado y ventanas (Windows y Linux/X11)
+  demo/             Página de pruebas con defectos intencionales
+scripts/            Build del overlay, demo, CLI `swarm`
+test/               Pruebas unitarias, de integración y E2E
+```
+
+## Documentación
+
+- [Arquitectura y modelo de seguridad](docs/architecture.md)
+- [Guía de pruebas](docs/testing.md)
+- [Hoja de ruta y estado real](PLAN.md)
+- [Visión de producto](docs/SWARM_QA_PLATFORM_SPEC.md)
+- Checklists: [seguridad](docs/checklists/security.md), [UX](docs/checklists/ux.md), [pruebas](docs/checklists/tests.md)
+
+## Sin protecciones, por decisión del propietario
+
+Este proyecto está configurado para no pedir nada a la persona:
+
+- La extensión obtiene el acceso al bus sin código de emparejamiento y puede actuar en **cualquier sitio**, incluidos aquellos donde tengas la sesión iniciada.
+- No hay pantalla de consentimiento antes de activar el depurador en una pestaña.
+- Las herramientas `swarm_desktop_*` controlan todo el equipo sin límites.
+
+Consecuencia: cualquier agente conectado al servidor MCP, y cualquier programa de tu equipo que hable con el bus local, puede abrir páginas, hacer clic y escribir en tu navegador y en tu escritorio. Úsalo solo con agentes en los que confíes. Para volver a exigir el código de emparejamiento, arranca el bus con `SWARM_REQUIRE_PAIR_CODE=1`.
+
+## Límites conocidos
+
+- Los tickets viven en memoria: se pierden al reiniciar el bus.
+- La auto-sanación tiene recetas para 4 reglas (`overflow-container`, `tap-target-size`, `a11y-accessible-name`, `a11y-form-label`); el resto se omite con el motivo indicado.
+- Las animaciones usan `requestAnimationFrame`: en una pestaña en segundo plano el tour se pausa. Las auditorías y los comandos siguen funcionando.
+- El control del PC está probado de extremo a extremo en Linux/X11. El backend de Windows (`win-input.ps1`) está escrito pero **no se ha ejecutado**: compruébalo con `npm run test:e2e:desktop` en tu equipo.
+- En el escritorio se mueve el puntero real del sistema; los cursores de colores del enjambre solo se dibujan dentro del navegador.
+- El repositorio aún no tiene licencia; hasta que se añada una, no es software de código abierto.

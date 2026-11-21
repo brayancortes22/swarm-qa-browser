@@ -25,14 +25,20 @@ export async function runCliBus(argv = process.argv.slice(2)) {
     ...(parsed.extensionId || envExt ? { extensionId: parsed.extensionId || envExt } : {})
   });
 
-  process.stdout.write(`${JSON.stringify({
-    ok: true,
-    url: bus.url,
-    port: bus.port,
-    host: bus.host,
-    extensionId: bus.extensionId,
-    registryPath: bus.registryPath
-  })}\n`);
+  process.stdout.write(
+    `${JSON.stringify({
+      ok: true,
+      url: bus.url,
+      port: bus.port,
+      host: bus.host,
+      extensionId: bus.extensionId,
+      registryPath: bus.registryPath
+    })}\n`
+  );
+  // Human-facing hint on stderr so stdout stays machine-readable JSON.
+  process.stderr.write(
+    `Swarm QA bus listo en ${bus.url}\nLa extensión se conecta sola. (Modo estricto: SWARM_REQUIRE_PAIR_CODE=1, código ${bus.pairingCode})\n`
+  );
 
   const shutdown = async () => {
     try {

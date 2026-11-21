@@ -29,18 +29,15 @@ export function controlWindow(hwnd, action = 'foreground') {
   if (!validActions.has(action)) return false;
 
   try {
-    const out = execFileSync('powershell.exe', [
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-Command',
-      PS_CONTROL_SNIPPET(numHwnd, action)
-    ], {
-      encoding: 'utf8',
-      timeout: 4000,
-      windowsHide: true
-    }).trim();
+    const out = execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', PS_CONTROL_SNIPPET(numHwnd, action)],
+      {
+        encoding: 'utf8',
+        timeout: 4000,
+        windowsHide: true
+      }
+    ).trim();
     return out.toLowerCase() === 'true';
   } catch {
     return false;
