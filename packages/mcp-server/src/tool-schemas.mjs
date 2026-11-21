@@ -519,5 +519,27 @@ export const SWARM_TOOLS = Object.freeze([
     },
     ['target'],
     ACT
+  ),
+  tool(
+    'swarm_ux_critique',
+    'Sweep Desktop/Tablet/Mobile viewports, evaluate UX/information architecture, post live recommendations to the on-page mission log and return a structured critique.',
+    {
+      tabId: TAB,
+      pauseMs: { type: 'number', description: 'Delay between viewports/notes in ms (default 450)' },
+      viewports: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            width: { type: 'number' },
+            height: { type: 'number' },
+            mobile: { type: 'boolean' }
+          }
+        }
+      }
+    },
+    [],
+    ACT
   )
 ]);

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { exportPatchManifest, generatePatch } from '../../core/src/patch-generator.mjs';
 import { DEFAULT_ROLES, resolveRole } from '../../core/src/roles.mjs';
+import { buildCritiqueTool } from './critique-tool.mjs';
 import { buildDesktopTools } from './desktop-tools.mjs';
 import { buildTestTools, createTestRecorder } from './test-tools.mjs';
 
@@ -562,6 +563,24 @@ export function buildToolHandlers(call, { desktopDriver, openBrowser, closeBrows
     swarm_await_event: (a) => call('events.await', { sinceSeq: a.sinceSeq ?? 0, timeoutMs: a.timeoutMs ?? 15000 }),
 
     ...testTools.tools,
+    ...buildCritiqueTool({
+      call,
+      resolveTabId: async (tabId) => {
+        const resolved = tabId ?? (await call('session.status', {})).selectedTabId;
+        if (resolved == null) throw new Error('No active tab connected to the bus');
+        return resolved;
+      },
+      withMutationLock,
+      postNote,
+      moveRoleCursor: (tabId, roleKey, selector, status) => {
+        const role = resolveRole(roleKey);
+        cursors.track(tabId, role.id);
+        return call('tab.command', {
+          tabId,
+          command: { action: 'move_cursor', cursor: { id: role.id, label: role.label, color: role.color, selector, status } }
+        });
+      }
+    }),
     ...buildDesktopTools({ recorder, ...(desktopDriver ? { driver: desktopDriver } : {}) })
   };
 }
