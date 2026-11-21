@@ -1,3 +1,5 @@
+const TEXT = { type: 'string', description: 'Visible text of the target element (alternative to selector)' };
+const NUM = { type: 'number' };
 const TAB = { type: ['string', 'number'], description: 'Target browser tab ID (defaults to selected tab)' };
 const AGENT = { type: 'string', description: 'Agent or role ID (e.g. layout, responsive, interactive, dev-1)' };
 const VP = { type: 'object', properties: { width: { type: 'number' }, height: { type: 'number' } } };
@@ -126,11 +128,12 @@ export const SWARM_TOOLS = Object.freeze([
   ),
   tool(
     'swarm_click',
-    'Dispatch a real trusted click by CSS selector or coordinates under lock protection.',
+    'Dispatch a real trusted click by CSS selector, visible text or coordinates under lock protection.',
     {
       tabId: TAB,
       agentId: AGENT,
       selector: { type: 'string' },
+      text: TEXT,
       x: { type: 'number' },
       y: { type: 'number' },
       button: { type: 'string' },
@@ -141,15 +144,16 @@ export const SWARM_TOOLS = Object.freeze([
   ),
   tool(
     'swarm_fill',
-    'Focus and fill a form input or textarea by selector under lock protection.',
+    'Focus and fill a form input or textarea (by selector, or by the visible text of its label) under lock protection.',
     {
       tabId: TAB,
       agentId: AGENT,
       selector: { type: 'string' },
+      text: TEXT,
       value: { type: 'string' },
       clear: { type: 'boolean' }
     },
-    ['selector', 'value'],
+    ['value'],
     ACT
   ),
   tool(
@@ -281,5 +285,169 @@ export const SWARM_TOOLS = Object.freeze([
     },
     [],
     RO
+  ),
+  // --- Web testing: observe, act, verify ---
+  tool(
+    'swarm_screenshot',
+    'See the page: returns an image of the tab (viewport, or the full page). Image coordinates are CSS pixels usable with swarm_click.',
+    {
+      tabId: TAB,
+      fullPage: { type: 'boolean' },
+      format: { type: 'string', enum: ['jpeg', 'png'] },
+      quality: NUM
+    },
+    [],
+    RO
+  ),
+  tool(
+    'swarm_snapshot',
+    'Read the page as an outline: URL, title, scroll position and the interactive elements (selector, name, type, value, position). Cheaper than a screenshot.',
+    {
+      tabId: TAB,
+      scope: { type: 'string', enum: ['viewport', 'page'] },
+      max: NUM
+    },
+    [],
+    RO
+  ),
+  tool(
+    'swarm_hover',
+    'Move the real mouse over an element (by selector, visible text or coordinates) to trigger hover states and menus.',
+    {
+      tabId: TAB,
+      agentId: AGENT,
+      selector: { type: 'string' },
+      text: TEXT,
+      x: NUM,
+      y: NUM
+    },
+    [],
+    ACT
+  ),
+  tool(
+    'swarm_scroll',
+    'Scroll the page: bring an element into view, jump to top/bottom, or scroll by an offset (default: one screen down).',
+    {
+      tabId: TAB,
+      agentId: AGENT,
+      selector: { type: 'string' },
+      text: TEXT,
+      to: { type: 'string', enum: ['top', 'bottom'] },
+      by: { type: 'object', properties: { x: NUM, y: NUM } },
+      smooth: { type: 'boolean' }
+    },
+    [],
+    ACT
+  ),
+  tool(
+    'swarm_wait_for',
+    'Wait until an element (selector or visible text) is visible, hidden, attached or detached. Fails with WAIT_TIMEOUT.',
+    {
+      tabId: TAB,
+      selector: { type: 'string' },
+      text: TEXT,
+      state: { type: 'string', enum: ['visible', 'hidden', 'attached', 'detached'] },
+      timeoutMs: NUM
+    },
+    [],
+    RO
+  ),
+  tool(
+    'swarm_expect',
+    'Assert an expected outcome and record it in the test run. Retries until it passes or times out. With reportOnFail, a failure becomes a P1 ticket.',
+    {
+      tabId: TAB,
+      agentId: AGENT,
+      description: { type: 'string', description: 'What this step verifies, in plain words' },
+      selector: { type: 'string' },
+      text: TEXT,
+      visible: { type: 'boolean' },
+      textIncludes: { type: 'string' },
+      valueEquals: { type: 'string' },
+      count: NUM,
+      urlIncludes: { type: 'string' },
+      titleIncludes: { type: 'string' },
+      timeoutMs: NUM,
+      reportOnFail: { type: 'boolean' }
+    },
+    [],
+    ACT
+  ),
+  tool(
+    'swarm_test_report',
+    'Finish a test run: summarizes every recorded action and expectation (web and desktop), writes .qa/test-report-<name>.json and returns pass/fail.',
+    {
+      name: { type: 'string' },
+      reset: { type: 'boolean', description: 'Start a fresh run afterwards (default true)' }
+    },
+    [],
+    ACT
+  ),
+
+  // --- Whole-computer control ---
+  tool('swarm_desktop_status', 'Check desktop control: platform, screen size and current pointer position.', {}, [], RO),
+  tool(
+    'swarm_desktop_screenshot',
+    'See the whole screen (or a region). Image pixels are screen pixels unless maxWidth downscales it.',
+    {
+      region: { type: 'object', properties: { x: NUM, y: NUM, width: NUM, height: NUM } },
+      maxWidth: NUM,
+      quality: NUM
+    },
+    [],
+    RO
+  ),
+  tool('swarm_desktop_list_windows', 'List the visible top-level windows with id, title, process id and position.', {}, [], RO),
+  tool(
+    'swarm_desktop_focus_window',
+    'Bring a window to the front, by id or by part of its title.',
+    { windowId: { type: ['string', 'number'] }, title: { type: 'string' } },
+    [],
+    ACT
+  ),
+  tool('swarm_desktop_move', 'Move the real mouse pointer to screen coordinates.', { x: NUM, y: NUM }, ['x', 'y'], ACT),
+  tool(
+    'swarm_desktop_click',
+    'Click the real mouse at screen coordinates (or where it is). Supports left/right/middle and double clicks.',
+    {
+      x: NUM,
+      y: NUM,
+      button: { type: 'string', enum: ['left', 'right', 'middle'] },
+      clickCount: NUM
+    },
+    [],
+    ACT
+  ),
+  tool(
+    'swarm_desktop_drag',
+    'Press the left button at one point, drag to another and release.',
+    { fromX: NUM, fromY: NUM, toX: NUM, toY: NUM },
+    ['fromX', 'fromY', 'toX', 'toY'],
+    ACT
+  ),
+  tool(
+    'swarm_desktop_scroll',
+    'Turn the mouse wheel (deltaY > 0 scrolls down), optionally after moving to a point.',
+    { x: NUM, y: NUM, deltaY: NUM, deltaX: NUM },
+    [],
+    ACT
+  ),
+  tool('swarm_desktop_type', 'Type text with the real keyboard into whatever has focus.', { text: { type: 'string' } }, ['text'], ACT),
+  tool(
+    'swarm_desktop_key',
+    'Press a key or chord, e.g. "Enter", "ctrl+s", "alt+tab", "win+r".',
+    { keys: { type: 'string' } },
+    ['keys'],
+    ACT
+  ),
+  tool(
+    'swarm_desktop_open',
+    'Start a program, or open a file or URL with its default application.',
+    {
+      target: { type: 'string' },
+      args: { type: 'array', items: { type: 'string' } }
+    },
+    ['target'],
+    ACT
   )
 ]);

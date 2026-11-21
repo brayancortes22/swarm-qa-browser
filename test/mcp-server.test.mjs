@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -34,7 +34,25 @@ const EXPECTED_TOOLS = [
   'swarm_mark_fixed',
   'swarm_heal_findings',
   'swarm_verify_finding',
-  'swarm_await_event'
+  'swarm_await_event',
+  'swarm_screenshot',
+  'swarm_snapshot',
+  'swarm_hover',
+  'swarm_scroll',
+  'swarm_wait_for',
+  'swarm_expect',
+  'swarm_test_report',
+  'swarm_desktop_status',
+  'swarm_desktop_screenshot',
+  'swarm_desktop_list_windows',
+  'swarm_desktop_focus_window',
+  'swarm_desktop_move',
+  'swarm_desktop_click',
+  'swarm_desktop_drag',
+  'swarm_desktop_scroll',
+  'swarm_desktop_type',
+  'swarm_desktop_key',
+  'swarm_desktop_open'
 ];
 
 function makeTempRegistry(prefix = 'swarm-mcp-test-') {
@@ -140,7 +158,7 @@ function connectMockTab(
 }
 
 describe('mcp-server tools & stdio transport', () => {
-  it('exposes all 22 tool schemas and handles initialize, notifications, and tools/list (plus Content-Length)', async () => {
+  it('exposes all 40 tool schemas and handles initialize, notifications, and tools/list (plus Content-Length)', async () => {
     assert.equal(SWARM_TOOLS.length, EXPECTED_TOOLS.length);
     for (const name of EXPECTED_TOOLS) {
       const tool = SWARM_TOOLS.find((t) => t.name === name);
@@ -682,6 +700,137 @@ describe('mcp-server swarm control & self-healing', () => {
       assert.equal(byRule['overflow-container'].round, 1);
       assert.equal(bus.locks.status(101).locked, false);
     } finally {
+      tab.ws.close();
+      await server.close();
+      await bus.close();
+      tmp.cleanup();
+    }
+  });
+});
+
+describe('mcp-server AI testing tools (web + desktop)', () => {
+  it('targets elements by text, verifies expectations with retries, returns images, drives the desktop and writes a test report', async () => {
+    const tmp = makeTempRegistry();
+    const bus = await startSwarmBus({ port: 0, registryPath: tmp.registryPath });
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const desktopCalls = [];
+    const desktopDriver = {
+      status: async () => ({ supported: true, platform: 'test', screen: { width: 1920, height: 1080 }, pointer: { x: 5, y: 6 } }),
+      screenshot: async (o) => (desktopCalls.push(['screenshot', o]), { data: 'ZmFrZQ==', mimeType: 'image/jpeg' }),
+      listWindows: async () => [{ id: '7', title: 'Bloc de notas', pid: 1, rect: { x: 0, y: 0, width: 800, height: 600 } }],
+      focusWindow: async (a) => (desktopCalls.push(['focus', a]), { focused: true }),
+      move: async (a) => (desktopCalls.push(['move', a]), a),
+      click: async (a) => (desktopCalls.push(['click', a]), { x: a.x, y: a.y }),
+      drag: async (a) => (desktopCalls.push(['drag', a]), { x: a.toX, y: a.toY }),
+      scroll: async (a) => void desktopCalls.push(['scroll', a]),
+      type: async (a) => void desktopCalls.push(['type', a]),
+      key: async (a) => {
+        if (a.keys === 'boom') throw new Error('Unknown key: boom');
+        desktopCalls.push(['key', a]);
+      },
+      open: async (a) => (desktopCalls.push(['open', a]), { opened: true, target: a.target, pid: 99 })
+    };
+    const server = createMcpServer({ registryPath: tmp.registryPath, desktopDriver, stdin, stdout });
+    const client = createJsonRpcClient(stdin, stdout);
+    const tab = await connectMockTab(bus, { url: 'http://localhost:5173/login' });
+    // A tiny fake page: the welcome banner appears only after the button has been clicked, 300 ms later.
+    let clickedAt = null;
+    const reply = (msg, result) => tab.ws.send(JSON.stringify({ type: 'command_result', commandId: msg.commandId, ok: true, result }));
+    tab.ws.removeAllListeners('message');
+    tab.ws.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString('utf8'));
+      if (msg.type !== 'command') return;
+      const cmd = msg.command;
+      tab.state.commands.push(cmd);
+      if (cmd.action === 'query') {
+        if (cmd.text === 'Entrar' && !cmd.prefer)
+          return reply(msg, { found: true, visible: true, count: 1, selector: '#login-btn', text: 'Entrar' });
+        if (cmd.text === 'Correo' && cmd.prefer === 'control')
+          return reply(msg, { found: true, visible: true, count: 1, selector: '#email', value: '' });
+        if (cmd.selector === '#welcome') {
+          const shown = clickedAt !== null && Date.now() - clickedAt > 300;
+          return reply(
+            msg,
+            shown
+              ? { found: true, visible: true, count: 1, selector: '#welcome', text: 'Hola, Ana' }
+              : { found: false, count: 0, visible: false }
+          );
+        }
+        return reply(msg, { found: false, count: 0, visible: false });
+      }
+      if (cmd.action === 'click') clickedAt = Date.now();
+      if (cmd.action === 'screenshot')
+        return reply(msg, { data: 'aW1n', mimeType: 'image/jpeg', width: 390, height: 844, fullPage: false });
+      if (cmd.action === 'snapshot')
+        return reply(msg, { url: 'http://localhost:5173/login', title: 'Acceso', elements: [{ selector: '#login-btn', name: 'Entrar' }] });
+      reply(msg, { ok: true, action: cmd.action });
+    });
+    const qaDir = join(tmp.dir, 'qa');
+    process.env.SWARM_QA_DIR = qaDir;
+    try {
+      await server.start();
+      const shot = await client.callTool('swarm_snapshot', {});
+      assert.equal(shot.data.elements[0].name, 'Entrar');
+      const image = await client.request('tools/call', { name: 'swarm_screenshot', arguments: {} });
+      assert.deepEqual(image.result.content[0], { type: 'image', data: 'aW1n', mimeType: 'image/jpeg' });
+      assert.equal(JSON.parse(image.result.content[1].text).width, 390);
+
+      await client.callTool('swarm_fill', { text: 'Correo', value: 'ana@example.com' });
+      assert.deepEqual(
+        tab.state.commands.findLast((c) => c.action === 'fill'),
+        { action: 'fill', selector: '#email', value: 'ana@example.com' }
+      );
+      await client.callTool('swarm_click', { text: 'Entrar' });
+      assert.equal(tab.state.commands.findLast((c) => c.action === 'click').selector, '#login-btn');
+      const missing = await client.callTool('swarm_click', { text: 'No existe' });
+      assert.equal(missing.isError, true);
+      assert.equal(missing.data.code, 'ELEMENT_NOT_FOUND');
+
+      const waited = await client.callTool('swarm_wait_for', { selector: '#welcome', timeoutMs: 2000 });
+      assert.equal(waited.data.ok, true);
+      const ok = await client.callTool('swarm_expect', {
+        description: 'Saluda al usuario',
+        selector: '#welcome',
+        textIncludes: 'ana',
+        urlIncludes: '/login'
+      });
+      assert.equal(ok.data.passed, true);
+      const bad = await client.callTool('swarm_expect', {
+        selector: '#welcome',
+        textIncludes: 'Bienvenida',
+        timeoutMs: 200,
+        reportOnFail: true
+      });
+      assert.equal(bad.data.passed, false);
+      assert.equal(bus.store.get(bad.data.ticketId).ruleId, 'expectation-failed');
+      assert.equal((await client.callTool('swarm_wait_for', { selector: '#nope', timeoutMs: 100 })).data.code, 'WAIT_TIMEOUT');
+
+      const desk = await client.request('tools/call', { name: 'swarm_desktop_screenshot', arguments: {} });
+      assert.equal(desk.result.content[0].type, 'image');
+      assert.match(JSON.parse(desk.result.content[1].text).note, /screen pixels/);
+      assert.equal((await client.callTool('swarm_desktop_list_windows', {})).data.count, 1);
+      await client.callTool('swarm_desktop_focus_window', { title: 'bloc' });
+      await client.callTool('swarm_desktop_click', { x: 400, y: 300, clickCount: 2 });
+      await client.callTool('swarm_desktop_type', { text: 'secreto123' });
+      await client.callTool('swarm_desktop_key', { keys: 'ctrl+s' });
+      await client.callTool('swarm_desktop_open', { target: 'notepad.exe' });
+      assert.equal((await client.callTool('swarm_desktop_key', { keys: 'boom' })).isError, true);
+      assert.deepEqual(
+        desktopCalls.map((c) => c[0]),
+        ['screenshot', 'focus', 'click', 'type', 'key', 'open']
+      );
+
+      const report = (await client.callTool('swarm_test_report', { name: 'Login feliz' })).data;
+      assert.equal(report.passed, false);
+      assert.deepEqual(report.totals, { steps: 11, actions: 9, expectations: 2, failedActions: 2, failedExpectations: 1 });
+      assert.equal(report.file, join(qaDir, 'test-report-login-feliz.json'));
+      const saved = readFileSync(report.file, 'utf8');
+      assert.equal(JSON.parse(saved).steps.length, 11);
+      assert.equal(saved.includes('secreto123') || saved.includes('ana@example.com'), false, 'typed values never reach the report');
+      assert.equal((await client.callTool('swarm_test_report', {})).data.totals.steps, 0);
+    } finally {
+      delete process.env.SWARM_QA_DIR;
       tab.ws.close();
       await server.close();
       await bus.close();

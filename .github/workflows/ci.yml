@@ -38,3 +38,8 @@ jobs:
       - run: npm install --no-save playwright
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+      - name: Desktop control (real mouse and keyboard under Xvfb)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xdotool imagemagick xvfb
+          npm run test:e2e:desktop

@@ -6,7 +6,7 @@
  *   npm run test:e2e -- --shots   # also refreshes docs/media/*.png
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -60,7 +60,9 @@ function createMcpClient(stdin, stdout) {
       pending.set(id, resolve);
       stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } })}\n`);
     });
-    const data = JSON.parse(response.result.content[0].text);
+    const content = response.result.content;
+    if (content[0].type === 'image') return { image: content[0], ...JSON.parse(content[1].text) };
+    const data = JSON.parse(content[0].text);
     if (response.result.isError) throw new Error(`${name}: ${data.error}`);
     return data;
   };
@@ -137,6 +139,20 @@ async function runExtensionFlow() {
     assert.equal(click.trusted, true);
     await target.waitForFunction(() => location.hash === '#precios');
     step(`overlay injected in the isolated world: tour, audit (${audit.findings.length} findings) and trusted click work`);
+
+    const shot = (await rpc('tab.command', { tabId, command: { action: 'screenshot' } })).result;
+    assert.ok(
+      Buffer.from(shot.data, 'base64')
+        .subarray(0, 3)
+        .equals(Buffer.from([0xff, 0xd8, 0xff])) && shot.width === 1280,
+      'extension screenshot is a JPEG in CSS pixels'
+    );
+    assert.equal(
+      (await rpc('tab.command', { tabId, agentId: 'interactive', command: { action: 'hover', selector: '.btn-primary' } })).result.hovered,
+      true
+    );
+    assert.equal((await rpc('tab.command', { tabId, command: { action: 'query', text: 'Ver planes' } })).result.found, true);
+    step('screenshot, hover and find-by-text work through chrome.debugger');
 
     assert.equal((await send({ type: 'detach_tab', tabId })).ok, true);
     await bus.waitForEvent((await rpc('session.status')).result.seq - 1, 3000);
@@ -246,6 +262,47 @@ try {
   await callTool('swarm_click', { agentId: 'interactive', selector: '.nav-links a[href="#precios"]' });
   await page.waitForFunction(() => location.hash === '#precios');
   step('trusted click navigated the page; read-only role was refused');
+
+  // AI-driven functional test: observe → act → verify → report.
+  process.env.SWARM_QA_DIR = join(tmp, 'qa');
+  const outline = await callTool('swarm_snapshot', { scope: 'page', max: 200 });
+  assert.ok(
+    outline.elements.some((e) => e.name === 'Ver planes' && e.tag === 'a'),
+    'outline lists the hero call to action'
+  );
+  const shotResult = await callTool('swarm_screenshot', {});
+  assert.equal(shotResult.image.mimeType, 'image/jpeg');
+  assert.ok(
+    Buffer.from(shotResult.image.data, 'base64')
+      .subarray(0, 3)
+      .equals(Buffer.from([0xff, 0xd8, 0xff])),
+    'screenshot is a real JPEG'
+  );
+  assert.deepEqual({ width: shotResult.width, height: shotResult.height }, { width: 1440, height: 860 });
+  await callTool('swarm_click', { agentId: 'interactive', text: 'Probar demo' });
+  assert.equal((await callTool('swarm_expect', { description: 'El enlace lleva a Producto', urlIncludes: '#producto' })).passed, true);
+  await callTool('swarm_scroll', { agentId: 'interactive', selector: '#email' });
+  await callTool('swarm_fill', { agentId: 'interactive', text: 'Correo', value: 'qa@lumen.test' });
+  assert.equal((await callTool('swarm_expect', { selector: '#email', valueEquals: 'qa@lumen.test' })).passed, true);
+  await callTool('swarm_hover', { agentId: 'interactive', text: 'Suscribirme' });
+  await callTool('swarm_wait_for', { text: 'Recibe novedades de Lumen', timeoutMs: 3000 });
+  const failing = await callTool('swarm_expect', {
+    description: 'Aparece un mensaje de confirmación',
+    text: 'Gracias por suscribirte',
+    timeoutMs: 400,
+    reportOnFail: true
+  });
+  assert.equal(failing.passed, false);
+  assert.equal(bus.store.get(failing.ticketId).ruleId, 'expectation-failed');
+  const report = await callTool('swarm_test_report', { name: 'Suscripción demo' });
+  assert.deepEqual(
+    { passed: report.passed, expectations: report.totals.expectations, failed: report.totals.failedExpectations },
+    { passed: false, expectations: 3, failed: 1 }
+  );
+  assert.equal(JSON.parse(readFileSync(report.file, 'utf8')).steps.length, report.totals.steps);
+  step(
+    `AI test run: saw the page (outline + screenshot), acted by visible text, ${report.totals.expectations} expectations (1 real failure → ticket ${failing.ticketId}), report written`
+  );
 
   await bridge.close();
   bridge = null;

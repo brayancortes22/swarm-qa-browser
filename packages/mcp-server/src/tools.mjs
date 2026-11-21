@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { exportPatchManifest, generatePatch } from '../../core/src/patch-generator.mjs';
 import { DEFAULT_ROLES, resolveRole } from '../../core/src/roles.mjs';
+import { buildDesktopTools } from './desktop-tools.mjs';
+import { buildTestTools, createTestRecorder } from './test-tools.mjs';
 
 const TICKET_FIELDS = ['ruleId', 'severity', 'category', 'selector', 'rect', 'description', 'expected', 'actual'];
 const LOCK_TTL_MS = 15_000;
@@ -37,7 +39,7 @@ function createCursorRegistry() {
  * Builds the MCP tool handlers. `call(action, params)` performs a bus RPC; handlers return plain
  * JSON that the transport serializes into the MCP `tools/call` result.
  */
-export function buildToolHandlers(call) {
+export function buildToolHandlers(call, { desktopDriver, recorder = createTestRecorder() } = {}) {
   const cursors = createCursorRegistry();
 
   /** Re-sends each tab's tickets and counters to its overlay so pins match the store. */
@@ -109,10 +111,41 @@ export function buildToolHandlers(call) {
     }
   }
 
-  const mutation = (scope, role, action, keys, describe, extra) => (args) =>
-    withMutationLock(args, scope, role, describe(args), { action, ...pick(args, keys), ...(extra ? extra(args) : {}) });
+  /**
+   * Builds a locked page action. Targets may be given as a CSS selector or as visible `text`;
+   * every run is logged in the test recorder (form values by length only).
+   */
+  const mutation = (scope, role, action, keys, describe, extra) => async (rawArgs) => {
+    const detail = {
+      ...pick(rawArgs, ['selector', 'text', 'url', 'key', 'x', 'y', 'width', 'height', 'to']),
+      ...(rawArgs.value !== undefined ? { valueLength: String(rawArgs.value).length } : {})
+    };
+    try {
+      // For fill, `text` names the field (label, placeholder…) rather than a piece of visible text.
+      const args = await testTools.resolveTarget(rawArgs, action === 'fill' ? 'control' : undefined);
+      const result = await withMutationLock(args, scope, role, describe(args), {
+        action,
+        ...pick(args, keys),
+        ...(extra ? extra(args) : {})
+      });
+      recorder.record({ kind: 'action', surface: 'web', tool: `swarm_${action}`, detail, ok: true });
+      return result;
+    } catch (err) {
+      recorder.record({
+        kind: 'action',
+        surface: 'web',
+        tool: `swarm_${action}`,
+        detail,
+        ok: false,
+        error: String(err?.message ?? err).slice(0, 200)
+      });
+      throw err;
+    }
+  };
 
   const overlayCommand = (action, keys) => (args) => call('tab.command', { tabId: args.tabId, command: { action, ...pick(args, keys) } });
+
+  const testTools = buildTestTools({ call, recorder, refreshPins, findTab });
 
   async function runDomAudit(args) {
     const status = await call('session.status', {});
@@ -337,6 +370,8 @@ export function buildToolHandlers(call) {
       (a) => ({ mobile: a.mobile ?? a.width <= 480 })
     ),
     swarm_click: mutation('interaction', 'interactive', 'click', ['selector', 'x', 'y', 'button', 'clickCount'], () => 'Click'),
+    swarm_hover: mutation('interaction', 'interactive', 'hover', ['selector', 'x', 'y'], () => 'Hover'),
+    swarm_scroll: mutation('interaction', 'interactive', 'scroll', ['selector', 'to', 'by', 'smooth'], () => 'Scroll'),
     swarm_fill: mutation('interaction', 'interactive', 'fill', ['selector', 'value', 'clear'], () => 'Fill'),
     swarm_press_key: mutation('interaction', 'interactive', 'press_key', ['key', 'selector', 'modifiers'], (a) => `Key ${a.key}`),
     swarm_navigate: mutation('interaction', 'interactive', 'navigate', ['url'], () => 'Navigate'),
@@ -379,6 +414,9 @@ export function buildToolHandlers(call) {
       await refreshPins([ticket.tabId]);
       return ticket;
     },
-    swarm_await_event: (a) => call('events.await', { sinceSeq: a.sinceSeq ?? 0, timeoutMs: a.timeoutMs ?? 15000 })
+    swarm_await_event: (a) => call('events.await', { sinceSeq: a.sinceSeq ?? 0, timeoutMs: a.timeoutMs ?? 15000 }),
+
+    ...testTools.tools,
+    ...buildDesktopTools({ recorder, ...(desktopDriver ? { driver: desktopDriver } : {}) })
   };
 }

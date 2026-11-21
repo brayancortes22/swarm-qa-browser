@@ -4,7 +4,7 @@ import { resolveBus } from './bus-client.mjs';
 import { SWARM_TOOLS } from './tool-schemas.mjs';
 import { buildToolHandlers } from './tools.mjs';
 
-const SERVER_INFO = { name: 'swarm-qa-browser', version: '0.2.0' };
+const SERVER_INFO = { name: 'swarm-qa-browser', version: '0.3.0' };
 const DEFAULT_PROTOCOL = '2024-11-05';
 const LF = 0x0a;
 const CR = 0x0d;
@@ -49,13 +49,13 @@ function createMessageReader(onMessage, onParseError) {
 }
 
 /** Creates a stdio JSON-RPC 2.0 MCP server wired to the local Swarm QA bus. */
-export function createMcpServer({ registryPath, busClient, stdin = process.stdin, stdout = process.stdout } = {}) {
+export function createMcpServer({ registryPath, busClient, desktopDriver, stdin = process.stdin, stdout = process.stdout } = {}) {
   let busState = null;
   let busPromise = null;
   const inflight = new Set();
 
   const ensureBus = () => (busPromise ??= resolveBus(registryPath, busClient).then((state) => (busState = state).client));
-  const handlers = buildToolHandlers(async (action, params) => (await ensureBus()).rpc(action, params));
+  const handlers = buildToolHandlers(async (action, params) => (await ensureBus()).rpc(action, params), { desktopDriver });
 
   function send(message, framed) {
     const json = JSON.stringify(message);
@@ -83,7 +83,8 @@ export function createMcpServer({ registryPath, busClient, stdin = process.stdin
     if (typeof name !== 'string' || !Object.hasOwn(handlers, name)) return fail(-32602, `Unknown tool: ${name}`);
     try {
       const result = await handlers[name](msg.params?.arguments || {});
-      return reply({ content: [{ type: 'text', text: JSON.stringify(result) }] });
+      // Tools that return images hand back ready-made MCP content.
+      return reply({ content: result?.__mcpContent ?? [{ type: 'text', text: JSON.stringify(result) }] });
     } catch (err) {
       const payload = { ok: false, error: err?.message ?? String(err), code: err?.code ?? 'TOOL_ERROR' };
       return reply({ isError: true, content: [{ type: 'text', text: JSON.stringify(payload) }] });
