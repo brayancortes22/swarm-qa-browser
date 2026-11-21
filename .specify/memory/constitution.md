@@ -1,50 +1,39 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+# Swarm QA Browser Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Non-destructive by default
+The overlay never deletes or rewrites page nodes. Every change it makes to an inspected page (tour styles, hot patches) is reversible and is reverted when the work ends, is cancelled, or the overlay is destroyed. A test must prove the page is restored exactly.
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+### II. Local and authenticated
+The bus binds to loopback only, rejects foreign origins, and requires the per-session token on every call. The extension obtains that token only with the pairing code. No secret is ever hardcoded or logged.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### III. Page data is untrusted
+Any text coming from an inspected page is sanitized, length-limited, and flagged `untrustedPageData: true`. Sensitive field values are redacted. Patches are validated data, never raw CSS, HTML or script.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### IV. Verified, not claimed (NON-NEGOTIABLE)
+A ticket becomes `verified` only when a fresh audit no longer reports the finding. Documentation states only what code and tests support; if a capability has no test, it is listed as pending.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### V. Real-time on the page
+Animation runs inside the page at display refresh rate. Transports carry high-level commands and events, so motion never depends on bus latency.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+### VI. Small modules, one responsibility
+Each source file has a single purpose and a doc comment explaining it. Prefer plain data and pure functions that can be unit-tested without a browser.
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+## Quality Gates
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+- `npm run lint`, `npm run format:check` and `npm test` pass before merging.
+- Changes to the overlay, adapters or bus also pass `npm run test:e2e` in a real Chromium.
+- Mutating commands require the tab lock; read-only roles cannot mutate.
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+## Development Workflow
+
+- Work on feature branches from `development`; open a pull request with the tests that cover the change.
+- Conventional commit messages (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
+- Generated files (`overlay.bundle.js`) are never committed.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This constitution overrides conflicting guidance in older planning documents. Amendments are made by pull request, with the reason for the change and any migration it requires.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2026-11-21 | **Last Amended**: 2026-11-21

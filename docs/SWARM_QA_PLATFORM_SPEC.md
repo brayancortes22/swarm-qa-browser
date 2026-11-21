@@ -1,7 +1,9 @@
 # 🛸 SWARM QA PLATFORM — MASTER BLUEPRINT & PRODUCT VISION
 **Plataforma Autónoma Multiagente de Auditoría Visual, Accesibilidad y QA Cinemático**  
 *Autor: Brayan Stid Cortés Lombana (`bscl`) & Antigravity Swarm Architecture*  
-*Versión: 1.0.0 — Noviembre 2026*
+*Versión: 1.1.0 — Noviembre 2026*
+
+> **Nota de alcance.** Este documento describe la visión del producto. El estado real, con lo que está implementado y probado, está en [PLAN.md](../PLAN.md) y en [docs/architecture.md](architecture.md). Donde ambos difieran, manda el código.
 
 ---
 
@@ -24,7 +26,7 @@ No es un simple plugin de anotaciones ni una biblioteca de pruebas: es un **ento
 
 ## 2. 🏛️ Arquitectura del Sistema (System Architecture)
 
-La arquitectura sigue los principios de **Minimalismo Pragmático (Ponytail)**, **Aislamiento de Responsabilidad Única (SRP)** y **Cero Hardcoding (Regla 6)**. Se compone de 5 capas desacopladas:
+La arquitectura sigue los principios de **Minimalismo Pragmático (Ponytail)**, **Aislamiento de Responsabilidad Única (SRP)** y **configuración sin valores quemados**. Se compone de 5 capas desacopladas:
 
 ```mermaid
 flowchart TD
@@ -120,9 +122,10 @@ sequenceDiagram
     participant Agent as Agente Orquestador (MCP)
     participant DOM as Página Web (DOM)
 
-    Extension->>Bus: WS Connect (127.0.0.1:47921)
-    Extension->>Bus: POST /pair (token cifrado + extensionId)
-    Bus-->>Extension: Pair OK (Sesión activa autorizada)
+    Extension->>Bus: POST /pair (Origin de la extensión + código de emparejamiento)
+    Bus-->>Extension: { token de sesión, puerto }
+    Extension->>Bus: WS Connect (?token=…) + hello { tabId, url, viewport }
+    Bus-->>Extension: hello_ack
     
     Agent->>Bus: POST /rpc { action: "session.status" }
     Bus-->>Agent: { tabs: [{ tabId: 951291182, url: "...", viewport: {...} }] }
@@ -180,7 +183,7 @@ stateDiagram-v2
     AWAITING_REVERIFY --> REOPENED: Re-auditoría detecta persistencia del bug
     REOPENED --> CLAIMED: Reintento de corrección (Ronda <= 3)
     REOPENED --> ESCALATED: Supera 3 rondas sin converger
-    VERIFIED --> [*]: Consolidado en .qa/latest.json y PR creado
+    VERIFIED --> [*]: Exportable a .qa/ (la creación de PR es una meta futura)
     ESCALATED --> [*]: Requiere intervención manual del usuario
 ```
 
@@ -264,9 +267,9 @@ flowchart TD
 flowchart TD
     M1["Hito 1: Cimientos y Orquestación Cinemática (COMPLETADO)<br/>- Loopback Bus con SessionAuth tokenizada<br/>- Extensión Chrome MV3 y Adaptador CDP<br/>- Overlay ShadowRoot con cursores 60 FPS y HUD Refero AAA<br/>- Erradicación de coordenadas quemadas (100% Selectores Dinámicos)"]
     
-    M2["Hito 2: Integración Nativa con LLM y Razonamiento Autónomo (EN CURSO)<br/>- Los agentes no dependen de scripts prefijados: razonan sobre el DOM<br/>- Integración directa con herramientas MCP de Antigravity<br/>- Subagentes especializados (Arquitecto, Dev, QA, DevSecOps)"]
+    M2["Hito 2: Integración Nativa con LLM y Razonamiento Autónomo (EN CURSO: 22 herramientas MCP disponibles)<br/>- Los agentes no dependen de scripts prefijados: razonan sobre el DOM<br/>- Integración directa con herramientas MCP de Antigravity<br/>- Subagentes especializados (Arquitecto, Dev, QA, DevSecOps)"]
     
-    M3["Hito 3: Auto-Sanación en Caliente (Self-Healing DOM/CSS)<br/>- Generación automática de parches de estilos e interactividad<br/>- Inyección en caliente y prueba empírica antes de sugerir el cambio<br/>- Creación automática de PRs verificados hacia rama development"]
+    M3["Hito 3: Auto-Sanación en Caliente (PARCIAL: 4 recetas con verificación por re-auditoría)<br/>- Generación automática de parches de estilos e interactividad<br/>- Inyección en caliente y prueba empírica antes de sugerir el cambio<br/>- Creación automática de PRs verificados hacia rama development"]
     
     M4["Hito 4: Grabación Cinemática y Reproducción Visual (Session Replay)<br/>- Exportación de vídeos ligeros y timelines interactivos del recorrido del enjambre<br/>- Comentarios temporizados y anclajes por componente para revisión de producto"]
     
@@ -283,13 +286,13 @@ flowchart TD
 ## 7. 🛡️ Estándar de Seguridad y Principios de Ingeniería
 
 1. **Aislamiento Perimetral (Zero-Trust Localhost):**  
-   El bus de comunicación (`127.0.0.1:47921`) no expone sockets hacia interfaces de red externas (`0.0.0.0`). Cualquier petición HTTP con cabecera `Origin` externa es bloqueada con `403 Forbidden`. Las mutaciones requieren token criptográfico de 24 bytes generado al inicio del daemon.
+   El bus de comunicación (`127.0.0.1:47921`) no expone sockets hacia interfaces de red externas (`0.0.0.0`). Cualquier petición HTTP con cabecera `Origin` externa es bloqueada con `403 Forbidden`. Toda llamada RPC requiere un token criptográfico de 24 bytes generado al iniciar el bus, y la extensión solo lo obtiene con el código de emparejamiento.
 2. **Protección de Datos Sensibles (Redaction):**  
    Cualquier input de tipo `password` o campo oculto es ofuscado automáticamente como `[redacted]`. Los datos de páginas no confiables viajan tipados como `untrustedPageData: true`.
 3. **Ergonomía Refero AAA & Vercel Guidelines:**  
-   Tipografías fluidas, `tabular-nums` en números dinámicos, contrastes WCAG 2.2 AA certificados, accesibilidad en lectores de pantalla mediante `role="status"` y respeto absoluto a `prefers-reduced-motion`.
+   Tipografías fluidas, `tabular-nums` en números dinámicos, contrastes pensados para WCAG 2.2 AA (sin certificación formal), accesibilidad en lectores de pantalla mediante `role="status"` y respeto absoluto a `prefers-reduced-motion`.
 4. **Respeto a la Filosofía Ponytail:**  
-   Archivos fuente concisos (<150-200 líneas), código modular, cero dependencias pesadas e innecesarias y arquitectura guiada por la simplicidad.
+   Archivos fuente de una sola responsabilidad, código modular, cero dependencias pesadas e innecesarias y arquitectura guiada por la simplicidad.
 
 ---
 *Este documento constituye la especificación canónica y el norte estratégico de desarrollo de **Swarm QA Platform**.*

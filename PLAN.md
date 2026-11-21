@@ -1,35 +1,34 @@
-# Plan Maestro: Swarm QA 2.0 (Integrated Agentic Ecosystem)
+# Hoja de ruta — Swarm QA Browser
 
-Este documento detalla la hoja de ruta para la evolución de **Swarm QA Browser** hacia un ecosistema de agentes autónomos con telemetría en tiempo real, control de SO y auto-sanación.
+Este documento separa lo que **funciona y está probado** de lo que está pendiente. Si una línea no tiene una prueba que la respalde, no aparece como hecha.
 
-## 1. Estado Actual (Validado)
-- ✅ **Arquitectura Bus Core:** Estable, coordinada por `cli-bus.mjs`.
-- ✅ **Adaptador de Escritorio:** Funcional, capaz de escanear ventanas y controlar el cursor.
-- ✅ **Capa Visual (Overlay):** Implementada en Electron, preparada para renderizar cursores (60 FPS).
-- ✅ **Auto-Sanación:** Integrada en el flujo de auditoría `tour:heal`.
-- ✅ **Git Workflow:** Estricto (dev -> qa -> main).
+## Hecho (v0.2)
 
-## 2. Plan de Mejora Evolutiva (Fases 1-4)
+- Motor de enjambre en tiempo real: hasta 32 cursores, selección con medidas, reglas, guías y sonido opcional.
+- Tour de reconstrucción reversible, con velocidad 1×/2×/4× y scroll automático.
+- Auditoría del DOM con coreografía visual, tickets deduplicados y pines que siguen a su elemento.
+- Auto-sanación con verificación real: parche, re-auditoría y reversión si el hallazgo persiste.
+- Bus local con emparejamiento por código, roles de solo lectura, candado para parches y eventos por SSE.
+- Tres transportes probados en Chromium real: página standalone, puente CDP y extensión MV3.
+- CLI `npm run swarm`, página de demostración, lint, formato y CI.
 
-### Fase 1: Telemetría de Clics y Cursores (In Progress)
-- [ ] Refinar `renderer.js` para sincronizar estados reales (bus) con el movimiento en pantalla.
-- [ ] Añadir pulso visual de "clic" (`isTrusted: true`) y etiquetas de rol dinámicas.
+## Siguiente
 
-### Fase 2: Guardrails y Autonomía Acotada
-- [ ] Implementar `budget` por sesión en `cli-bus.mjs` (max steps/retries).
-- [ ] Integrar `LockManager` con TTL estricto para evitar *deadlocks* en la interacción web/desktop.
+| Prioridad | Tarea | Motivo |
+| :--- | :--- | :--- |
+| 1 | Persistir tickets en disco | Hoy se pierden al reiniciar el bus. |
+| 2 | Presupuesto por sesión (pasos y reintentos) | Evita bucles largos de un agente. |
+| 3 | Botón de parada de emergencia en la barra del overlay | El candado caduca por TTL, pero no hay un aborto manual global. |
+| 4 | Más recetas de auto-sanación (`overflow-document`, `overlap-elements`) | Hoy solo hay 4 reglas con receta. |
+| 5 | Contraste de color y orden de foco en el auditor | Completa la cobertura de accesibilidad. |
+| 6 | Grabación y reproducción de sesiones | Revisar un recorrido sin repetirlo. |
 
-### Fase 3: Integración Integrada (Antigravity 2.0 + OS Mode)
-- [ ] Unificar el adaptador de navegador embebido con los esquemas del bus.
-- [ ] Implementar el *kill-switch* físico (monitoreo de teclado/ratón) para aborto inmediato.
+## Más adelante
 
-### Fase 4: Telemetría Visual (Snapshot/Rebuild)
-- [ ] Desarrollar módulo para reconstrucción de DOM/estilos en lienzo independiente.
+- Cursores sobre el escritorio (el adaptador de Windows hoy solo audita ventanas).
+- Ejecución en CI con comentarios automáticos en pull requests.
+- Elegir una licencia y publicar la extensión.
 
-## 3. Acciones inmediatas
-1. **Validación:** El sistema ya cumple con la mayoría de los RNF (Seguridad, Fidelidad).
-2. **Mejora:** Optimizar la latencia del bus en Windows (Node + PowerShell I/O).
-3. **Documentación:** Actualizar README principal con este plan y los nuevos endpoints del bus.
+## Flujo de ramas
 
----
-*Este plan será la base de nuestra hoja de ruta técnica.*
+`development` (trabajo activo, rama por defecto) → `qa` (validación) → `main` (estable). Las ramas de funcionalidad salen de `development` y vuelven a ella por pull request; CI se ejecuta en las tres ramas y en cada pull request.
