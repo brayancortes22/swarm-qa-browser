@@ -134,6 +134,20 @@ const commands = {
       note: result.note
     });
   },
+  async critique() {
+    const result = await tools.swarm_ux_critique(flags);
+    mkdirSync('.qa', { recursive: true });
+    writeFileSync('.qa/ux-critique.json', JSON.stringify(result, null, 2));
+    writeFileSync('.qa/ux-critique.md', result.markdown);
+    print({
+      url: result.url,
+      metrics: result.metrics,
+      viewportMatrix: result.viewportMatrix,
+      recommendations: result.recommendations.map((r) => ({ priority: r.priority, role: r.role, title: r.title, recommendation: r.recommendation })),
+      report: '.qa/ux-critique.md',
+      json: '.qa/ux-critique.json'
+    });
+  },
   watch
 };
 

@@ -58,7 +58,8 @@ const EXPECTED_TOOLS = [
   'swarm_desktop_scroll',
   'swarm_desktop_type',
   'swarm_desktop_key',
-  'swarm_desktop_open'
+  'swarm_desktop_open',
+  'swarm_ux_critique'
 ];
 
 function makeTempRegistry(prefix = 'swarm-mcp-test-') {
@@ -164,7 +165,7 @@ function connectMockTab(
 }
 
 describe('mcp-server tools & stdio transport', () => {
-  it('exposes all 46 tool schemas and handles initialize, notifications, and tools/list (plus Content-Length)', async () => {
+  it('exposes all 47 tool schemas and handles initialize, notifications, and tools/list (plus Content-Length)', async () => {
     assert.equal(SWARM_TOOLS.length, EXPECTED_TOOLS.length);
     for (const name of EXPECTED_TOOLS) {
       const tool = SWARM_TOOLS.find((t) => t.name === name);
