@@ -1,10 +1,12 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { openBrowserSession } from '../../cdp-adapter/src/browser-launcher.mjs';
+import { getRegistryPath } from '../../core/src/session-auth.mjs';
 import { resolveBus } from './bus-client.mjs';
 import { SWARM_TOOLS } from './tool-schemas.mjs';
 import { buildToolHandlers } from './tools.mjs';
 
-const SERVER_INFO = { name: 'swarm-qa-browser', version: '0.3.0' };
+const SERVER_INFO = { name: 'swarm-qa-browser', version: '0.4.0' };
 const DEFAULT_PROTOCOL = '2024-11-05';
 const LF = 0x0a;
 const CR = 0x0d;
@@ -55,7 +57,27 @@ export function createMcpServer({ registryPath, busClient, desktopDriver, stdin 
   const inflight = new Set();
 
   const ensureBus = () => (busPromise ??= resolveBus(registryPath, busClient).then((state) => (busState = state).client));
-  const handlers = buildToolHandlers(async (action, params) => (await ensureBus()).rpc(action, params), { desktopDriver });
+  const browserSessions = new Set();
+  /** Launches a browser window already attached to the swarm (the bus must be up first). */
+  const openBrowser = async (options) => {
+    await ensureBus();
+    const session = await openBrowserSession({ ...options, registryPath: registryPath || getRegistryPath() });
+    browserSessions.add(session);
+    return session;
+  };
+  const closeBrowsers = async (tabId) => {
+    const closing = [...browserSessions].filter((session) => tabId == null || session.tabId === tabId);
+    for (const session of closing) {
+      browserSessions.delete(session);
+      await session.close();
+    }
+    return closing.length;
+  };
+  const handlers = buildToolHandlers(async (action, params) => (await ensureBus()).rpc(action, params), {
+    desktopDriver,
+    openBrowser,
+    closeBrowsers
+  });
 
   function send(message, framed) {
     const json = JSON.stringify(message);
@@ -107,6 +129,7 @@ export function createMcpServer({ registryPath, busClient, desktopDriver, stdin 
   async function close() {
     stdin.off('data', onData);
     await Promise.allSettled([...inflight]);
+    await closeBrowsers().catch(() => {});
     if (busPromise) await busPromise.catch(() => {});
     if (busState?.ownedBus) await busState.ownedBus.close();
   }

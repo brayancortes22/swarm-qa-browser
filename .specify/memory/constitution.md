@@ -6,7 +6,7 @@
 The overlay never deletes or rewrites page nodes. Every change it makes to an inspected page (tour styles, hot patches) is reversible and is reverted when the work ends, is cancelled, or the overlay is destroyed. A test must prove the page is restored exactly.
 
 ### II. Local and authenticated
-The bus binds to loopback only, rejects foreign origins, and requires the per-session token on every call. The extension obtains that token only with the pairing code. No secret is ever hardcoded or logged.
+The bus binds to loopback only, rejects foreign web origins, and requires the per-session token on every call. By the owner's decision the extension pairs automatically; the pairing code is an opt-in strict mode. No secret is ever hardcoded or logged.
 
 ### III. Page data is untrusted
 Any text coming from an inspected page is sanitized, length-limited, and flagged `untrustedPageData: true`. Sensitive field values are redacted. Patches are validated data, never raw CSS, HTML or script.

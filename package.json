@@ -1,6 +1,6 @@
 {
   "name": "swarm-qa-browser",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Real-time multi-cursor QA swarm for live web pages: closed-loop audit, self-healing and verification across a Chrome MV3 extension, an MCP server and a CDP bridge.",

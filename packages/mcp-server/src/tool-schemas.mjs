@@ -286,6 +286,47 @@ export const SWARM_TOOLS = Object.freeze([
     [],
     RO
   ),
+  // --- Automatic start ---
+  tool(
+    'swarm_open',
+    "START HERE when no tab is connected: opens any http(s) URL with the swarm already attached: in the user's own Chrome when the extension is installed, otherwise in a browser it launches itself. Nothing to pair, accept or enable. Can start the rebuild tour or an audit immediately.",
+    {
+      url: { type: 'string' },
+      tour: { type: 'boolean' },
+      audit: { type: 'boolean' },
+      agents: NUM,
+      speed: NUM,
+      mode: {
+        type: 'string',
+        enum: ['auto', 'launch'],
+        description:
+          "auto (default): use the user's Chrome if the extension is connected, else launch a browser. launch: always launch a separate browser."
+      },
+      headless: { type: 'boolean', description: 'No visible window (for CI); default false' },
+      executablePath: { type: 'string', description: 'Browser to launch; default: installed Chrome, Edge, Brave or Chromium' }
+    },
+    ['url'],
+    ACT
+  ),
+  tool(
+    'swarm_browser_tabs',
+    "List the http(s) tabs open in the user's own browser (requires the extension, which connects by itself).",
+    {},
+    [],
+    RO
+  ),
+  tool(
+    'swarm_attach_tab',
+    "Attach the swarm to a tab that is already open in the user's browser: by tabId, by part of its URL, or the active tab. No click needed.",
+    {
+      tabId: NUM,
+      urlIncludes: { type: 'string' }
+    },
+    [],
+    ACT
+  ),
+  tool('swarm_close_browser', 'Close the browser windows opened with swarm_open (all, or the one for tabId).', { tabId: TAB }, [], ACT),
+
   // --- Orchestration ---
   tool(
     'swarm_post_message',
