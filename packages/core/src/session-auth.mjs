@@ -31,6 +31,52 @@ export function createToken() {
   return randomBytes(24).toString('hex');
 }
 
+const PAIRING_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const PAIRING_CODE_RE = /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/;
+
+/**
+ * Generates a human-typable pairing code (40 bits, no ambiguous characters), e.g. `K7QM-2XHD`.
+ */
+export function createPairingCode() {
+  const chars = Array.from(randomBytes(8), (byte) => PAIRING_ALPHABET[byte % PAIRING_ALPHABET.length]);
+  return `${chars.slice(0, 4).join('')}-${chars.slice(4).join('')}`;
+}
+
+/**
+ * Normalizes user input (case, spaces, missing dash) into the canonical `XXXX-XXXX` form.
+ */
+export function normalizePairingCode(value) {
+  const raw = String(value ?? '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+  return raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4)}` : '';
+}
+
+/**
+ * Pairing file lives next to the bus registry so isolated test registries get isolated codes.
+ */
+export function getPairingPath(registryPath = getRegistryPath()) {
+  return join(dirname(registryPath), 'pairing.json');
+}
+
+/**
+ * Returns the persistent pairing code, creating it (owner-only file) on first use. The code is a
+ * shared secret between this machine's user and the browser extension: unlike the Origin header,
+ * another local process cannot guess it, so it cannot obtain the session token through /pair.
+ */
+export function loadOrCreatePairingCode(pairingPath = getPairingPath()) {
+  try {
+    const existing = JSON.parse(readFileSync(pairingPath, 'utf8'))?.code;
+    if (typeof existing === 'string' && PAIRING_CODE_RE.test(existing)) return existing;
+  } catch {
+    // Missing or corrupt file: fall through and create a fresh code.
+  }
+  const code = createPairingCode();
+  mkdirSync(dirname(pairingPath), { recursive: true });
+  writeFileSync(pairingPath, JSON.stringify({ code, createdAt: new Date().toISOString() }, null, 2), { encoding: 'utf8', mode: 0o600 });
+  return code;
+}
+
 /**
  * Checks whether an Origin header is permitted to connect to the local swarm bus.
  */
@@ -115,9 +161,7 @@ export function acquireRegistryLock(info, registryPath = getRegistryPath()) {
       if (err?.code !== 'EEXIST') throw err;
       const existing = readBusRegistry(registryPath);
       if (existing?.pid && isPidAlive(existing.pid)) {
-        throw new Error(
-          `Swarm bus registry already held by live PID ${existing.pid} (port ${existing.port ?? 'unknown'})`
-        );
+        throw new Error(`Swarm bus registry already held by live PID ${existing.pid} (port ${existing.port ?? 'unknown'})`, { cause: err });
       }
       try {
         unlinkSync(registryPath);

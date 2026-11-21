@@ -9,9 +9,7 @@ function assertAgentAndTab(agentId, tabId) {
 
 function lockHeldError(lock, now) {
   const remainingMs = Math.max(1, lock.expiresAt - now);
-  const err = new Error(
-    `Tab ${lock.tabId} is locked by "${lock.agentId}" (scope: ${lock.scope}, ${remainingMs}ms remaining)`
-  );
+  const err = new Error(`Tab ${lock.tabId} is locked by "${lock.agentId}" (scope: ${lock.scope}, ${remainingMs}ms remaining)`);
   err.code = 'LOCK_HELD';
   err.holder = lock.agentId;
   err.remainingMs = remainingMs;

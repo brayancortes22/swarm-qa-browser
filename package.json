@@ -1,23 +1,40 @@
 {
   "name": "swarm-qa-browser",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Multi-cursor live QA, responsive audit, and closed-loop Dev verification bridge across Chrome MV3, MCP, and CDP.",
+  "description": "Real-time multi-cursor QA swarm for live web pages: closed-loop audit, self-healing and verification across a Chrome MV3 extension, an MCP server and a CDP bridge.",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "scripts": {
-    "test": "node --test \"test/**/*.test.mjs\"",
+    "prepare": "node scripts/build-overlay.mjs",
+    "build": "node scripts/build-overlay.mjs",
     "build:overlay": "node scripts/build-overlay.mjs",
-    "generate:key": "node scripts/generate-extension-key.mjs",
+    "pretest": "node scripts/build-overlay.mjs",
+    "test": "node --test --test-timeout=60000 \"test/*.test.mjs\"",
+    "test:e2e": "node scripts/build-overlay.mjs && node test/e2e/swarm.e2e.mjs",
+    "test:e2e:desktop": "node test/e2e/desktop.e2e.mjs",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "demo": "node scripts/build-overlay.mjs && node scripts/demo.mjs",
+    "swarm": "node scripts/swarm.mjs",
     "start:bus": "node packages/core/src/cli-bus.mjs",
     "start:mcp": "node packages/mcp-server/src/mcp-server.mjs",
     "start:cdp": "node packages/cdp-adapter/src/cdp-bridge.mjs",
-    "tour:desktop": "node scripts/desktop-swarm-tour.mjs",
-    "tour:heal": "node scripts/autonomous-swarm-healing.mjs"
+    "generate:key": "node scripts/generate-extension-key.mjs",
+    "desktop:audit": "node scripts/desktop-swarm-tour.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.15.0",
+    "globals": "^17.14.0",
+    "jsdom": "^31.0.1",
+    "prettier": "^3.10.1"
   }
 }

@@ -1,10 +1,10 @@
-# Checklist de Pruebas & Verificación (Hard Gate)
+# Checklist de pruebas
 
-- [x] Suite unitaria e integración `node --test` cubriendo:
-  - `ticket-store.test.mjs` (ciclo de 3 rondas exactas, `tabId`/`pathname`/`viewport`, `escalated`).
-  - `lock-manager.test.mjs` (exclusión mutua, TTL, liberación y reemplazo seguro).
-  - `swarm-bus-security.test.mjs` (rechazo `403` sin token / origen externo, pairing, WS real).
-  - `dom-auditor.test.mjs` (overflow horizontal, colisión de cajas, A11y, imágenes rotas, tap targets `<44px`, redacción `password`).
-  - `mcp-server.test.mjs` (protocolo stdio JSON-RPC end-to-end, `swarm_mark_fixed`, `swarm_report_finding`, `swarm_await_event`).
-- [x] Build de overlay (`node scripts/build-overlay.mjs`) verificado sin errores de sintaxis.
-- [x] Verificación visual en vivo de `popup.html` y overlay sobre `sonora-music-player` (`1440×900` y `390×844`) usando flujo permitido (`qa-annotator` / `antigravity-native-browser`).
+- [x] `npm test`: 58 pruebas en verde (unitarias e integración). Ver [docs/testing.md](../testing.md).
+- [x] `npm run test:e2e`: página standalone, puente CDP + MCP y extensión MV3 en Chromium real.
+- [x] `npm run lint` y `npm run format:check` sin errores.
+- [x] El bundle del overlay se genera y se verifica en cada `npm install` y `npm test`.
+- [x] CI (`.github/workflows/ci.yml`) ejecuta lint, formato, pruebas y E2E.
+- [x] `npm run test:e2e:desktop`: ratón y teclado reales sobre una ventana visible (Linux/X11 con Xvfb).
+- [ ] Scripts de Windows (`win-probe.ps1`, `win-input.ps1`) probados en una máquina real.
+- [ ] Prueba de rendimiento con páginas de más de 5000 nodos.

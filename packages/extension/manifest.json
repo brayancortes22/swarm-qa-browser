@@ -4,20 +4,9 @@
   "version": "0.1.0",
   "description": "Multi-cursor live QA overlay, responsive audit, and closed-loop verification bridge.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0vwE3LMwjEw6ehYet+HfBkzu1AVolnNYAynn/tjKRh428gpAESw/K5qxQ443SKEohY1SluqaBNYM1d02sNQpHLi/fMy6Ssd/VYauTV66uy3W9m+ZldExiKIammxJftNhMbcz7tnE2tmRbonN0ufpfDc+RLSVK5BFpj7Z4/N+A90T8LfdWEjJPhzigshTgXBEjBQ2InitRnR0w7fP0HK5i2W3J/3IItxjpN/qLEACDIgy0fGwOn2IdAIV+EcrLV3fb/qFrqoBxRsW4CnMjWa8ssQ2fl7YXIOYUORgE/DWzA2twdTgcRkK9jdtfFLLEh3l9mg4sWvLW4GR0eeuwyonhwIDAQAB",
-  "permissions": [
-    "activeTab",
-    "scripting",
-    "storage",
-    "debugger"
-  ],
-  "host_permissions": [
-    "http://localhost/*",
-    "http://127.0.0.1/*"
-  ],
-  "optional_host_permissions": [
-    "http://*/*",
-    "https://*/*"
-  ],
+  "permissions": ["activeTab", "scripting", "storage", "debugger"],
+  "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js",
     "type": "module"
