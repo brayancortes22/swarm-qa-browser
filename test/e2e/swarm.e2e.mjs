@@ -6,7 +6,7 @@
  *   npm run test:e2e -- --shots   # also refreshes docs/media/*.png
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -350,7 +350,13 @@ try {
 
   console.log('Automatic start (swarm_open: no extension, no pairing, no clicks)');
   const userDataDir = join(tmp, 'auto-profile');
-  process.env.SWARM_BROWSER_PATH = chromium.executablePath();
+  // Use Playwright's chrome-headless-shell for the headless launch: the full Chrome build segfaults
+  // headless on the CI runner (tiny /dev/shm). The shell is the binary Playwright uses for headless.
+  const fullChrome = chromium.executablePath();
+  const headlessShell = fullChrome
+    .replace('/chromium-', '/chromium_headless_shell-')
+    .replace('/chrome-linux64/chrome', '/chrome-headless-shell-linux64/chrome-headless-shell');
+  process.env.SWARM_BROWSER_PATH = existsSync(headlessShell) ? headlessShell : fullChrome;
   const opened = await callTool('swarm_open', { url: `${demo.url}/?bare=1&auto=1`, headless: true, agents: 14, tour: true, speed: 4 });
   assert.equal(opened.tour.running, true);
   const afterOpen = await callTool('swarm_session_status');
