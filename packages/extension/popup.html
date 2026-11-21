@@ -258,7 +258,7 @@
   </head>
   <body>
     <header class="row">
-      <div class="brand"><span>Swarm QA Browser</span><span class="tag">v0.2</span></div>
+      <div class="brand"><span>Swarm QA Browser</span><span class="tag">v0.4</span></div>
       <span class="pill" id="busBadge"><span class="dot" id="busDot"></span><span id="busText">Desconectado</span></span>
     </header>
 
@@ -271,7 +271,7 @@
         </div>
       </div>
       <div class="row">
-        <label class="lbl" for="pairInput">Código de emparejamiento</label>
+        <label class="lbl" for="pairInput">Código (solo modo estricto)</label>
         <div class="port-row">
           <input id="pairInput" type="text" maxlength="9" placeholder="XXXX-XXXX" autocomplete="off" spellcheck="false" />
           <button id="savePairBtn" type="button">Vincular</button>
@@ -292,24 +292,18 @@
     </section>
 
     <section class="card consent">
-      <h2>Consentimiento explícito antes de depurar</h2>
+      <h2>Modo automático</h2>
       <ul>
-        <li>Emulará viewports (ej. <em>390×844</em> y <em>1440×900</em>) vía <code>chrome.debugger</code>.</li>
-        <li>Enviará clics y teclado reales (<code>isTrusted: true</code>) bajo candado por turno.</li>
-        <li>Capturará consola/red; campos <code>password</code>/<code>hidden</code> se redactan como <code>[redacted]</code>.</li>
-        <li>Chrome mostrará la barra superior <em>"started debugging this browser"</em>.</li>
-        <li>En sitios fuera de <code>localhost</code>, se solicitará permiso explícito de origen.</li>
+        <li>La extensión se conecta sola al bus local; no hace falta código ni activar nada.</li>
+        <li>Tu agente puede abrir y controlar cualquier pestaña por sí mismo (<code>swarm_open</code>).</li>
+        <li>Mientras el enjambre esté activo, Chrome muestra la barra <em>"started debugging this browser"</em>.</li>
       </ul>
-      <label class="check">
-        <input id="consentCheck" type="checkbox" />
-        <span>Entiendo el alcance y autorizo depurar esta pestaña.</span>
-      </label>
     </section>
 
-    <button id="enableBtn" class="primary" type="button" disabled>Habilitar permisos y arrancar enjambre</button>
+    <button id="enableBtn" class="primary" type="button" disabled>Arrancar enjambre en esta pestaña</button>
 
     <div class="row">
-      <button id="detachBtn" class="danger" type="button" disabled>Desconectar y revocar depuración</button>
+      <button id="detachBtn" class="danger" type="button" disabled>Detener enjambre</button>
       <button id="exportBtn" class="export" type="button" disabled>Exportar hallazgos JSON</button>
     </div>
 

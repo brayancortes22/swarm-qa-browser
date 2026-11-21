@@ -6,7 +6,7 @@
   Cliente MCP (Antigravity, Claude Code, Cursor)        CLI `npm run swarm`
               │ stdio · JSON-RPC 2.0                          │
               ▼                                               │
-     packages/mcp-server  (42 herramientas) ──► packages/desktop-adapter (pantalla, ratón, teclado)
+     packages/mcp-server  (46 herramientas) ──► packages/desktop-adapter (pantalla, ratón, teclado)
               │ POST /rpc + x-swarm-token                     │
               ▼                                               ▼
      packages/core/src/swarm-bus.mjs  ── 127.0.0.1:47921 ──────────────
@@ -50,13 +50,20 @@ El overlay es un único bundle (`overlay.bundle.js`, generado con esbuild) que l
 
 ## Flujo de una sesión
 
-1. La extensión pide el token con `POST /pair`, enviando el código de emparejamiento.
+1. La extensión pide el token con `POST /pair` nada más arrancar (sin código, salvo en modo estricto) y se anuncia como navegador controlable (`extension_hello`).
 2. Abre el WebSocket con el token y registra la pestaña (`hello` → `hello_ack`).
 3. El agente llama a `swarm_run_dom_audit`. El overlay audita y el bus guarda los hallazgos nuevos como tickets (`tickets.ingest` deduplica por regla, selector y descripción).
 4. El agente corrige el código y llama a `swarm_mark_fixed`, que espera al HMR, re-audita y verifica o reabre cada ticket. Tras 3 rondas fallidas el ticket pasa a `escalated`.
 5. Alternativa: `swarm_heal_findings` prueba un parche en caliente por ticket y solo marca `verified` los que la re-auditoría confirma.
 
 Si alguien pulsa **Auditar** en la barra del overlay, el informe viaja al bus como `audit_report`, se convierte en tickets y los pines vuelven a la pestaña.
+
+## Arranque automático
+
+`swarm_open` deja una web lista para el enjambre sin intervención humana, por dos vías:
+
+- **Extensión conectada:** el bus reenvía `browser.command { open_tab | attach_tab | list_tabs }` a la extensión, que abre o engancha la pestaña en el Chrome del usuario.
+- **Sin extensión:** `browser-launcher.mjs` localiza un navegador Chromium, lo lanza con un perfil temporal y depuración remota en loopback, espera a que la página termine de cargar y conecta el puente CDP.
 
 ## Pruebas dirigidas por la IA
 
@@ -84,12 +91,12 @@ El puntero se desplaza por una trayectoria suavizada para que una persona pueda 
 1. **Solo loopback.** El bus se niega a enlazar en una dirección que no sea `127.0.0.1`, `localhost` o `::1`.
 2. **Orígenes.** Cualquier petición con `Origin` externo recibe `403`. Se aceptan la extensión (`chrome-extension://<id fijo>`), `http://localhost` y `http://127.0.0.1`, y clientes sin `Origin` (CLI, MCP).
 3. **Token de sesión.** RPC, WebSocket y SSE exigen un token aleatorio de 24 bytes que cambia en cada arranque. Se guarda en `~/.swarm-qa-browser/bus.json` con permisos `0600`.
-4. **Emparejamiento.** `POST /pair` exige el origen de la extensión **y** un código persistente (`~/.swarm-qa-browser/pairing.json`, `0600`). La cabecera `Origin` la puede falsificar cualquier proceso local; el código no. Cinco intentos fallidos bloquean el emparejamiento un minuto.
+4. **Emparejamiento automático.** Por defecto `POST /pair` solo exige el origen de la extensión. La cabecera `Origin` la puede falsificar cualquier proceso local, así que cualquier programa del equipo puede obtener el token; es una decisión expresa del propietario para que no haya pasos manuales. El modo estricto (`SWARM_REQUIRE_PAIR_CODE=1`) vuelve a exigir el código persistente y limita los intentos.
 5. **Aislamiento.** El overlay se ejecuta en el mundo `ISOLATED` de la extensión o en un mundo aislado creado por CDP, dentro de un ShadowRoot cerrado. Si un webview no admite mundos aislados, el puente CDP usa el mundo principal y no deja ninguna referencia global.
 6. **Datos no confiables.** El texto que sale de la página se limpia de caracteres de control y bidi, se limita a 280 caracteres y viaja marcado con `untrustedPageData: true`. Los valores de campos `password` y `hidden` se sustituyen por `[redacted]`.
 7. **Mutaciones con candado.** `set_viewport`, `click`, `hover`, `scroll`, `fill`, `press_key`, `navigate`, `apply_patch` y `revert_patch` exigen el candado de la pestaña. Los roles marcados como solo lectura (`layout`, `forms-a11y`, `console-net`) no pueden mutar.
 8. **Parches como datos.** Un parche nunca contiene CSS ni HTML libre: el selector debe existir en la página y cada declaración se valida por separado.
-9. **Consentimiento.** La extensión no adjunta el depurador sin confirmación explícita y pide permiso de origen para sitios fuera de `localhost`.
+9. **Sin consentimiento por pestaña.** La extensión tiene acceso a todos los sitios (`<all_urls>`) y adjunta el depurador cuando el agente lo pide (`browser.command`) o al pulsar su botón; no hay confirmación previa.
 
 Los puntos anteriores protegen la superficie **web**. Las herramientas de escritorio quedan fuera de este modelo: ver la sección *Control del PC*.
 

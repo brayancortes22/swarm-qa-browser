@@ -6,19 +6,20 @@
 npm test
 ```
 
-Ejecuta 58 pruebas con `node:test`. No necesitan navegador.
+Ejecuta 63 pruebas con `node:test`. No necesitan navegador.
 
 | Archivo | Cubre |
 | :--- | :--- |
 | `ticket-store.test.mjs` | Ciclo de vida de tickets, 3 rondas exactas, saneado de texto. |
 | `lock-manager.test.mjs` | Exclusión mutua, TTL, renovación y registro del bus. |
 | `swarm-bus-security.test.mjs` | Orígenes (`403`), token (`401`), código de emparejamiento y límite de intentos, `tab_closed`, roles de solo lectura, candado de parches, `tickets.ingest`, SSE. |
-| `mcp-server.test.mjs` | Protocolo stdio, las 42 herramientas, bucle QA → Dev → re-verificación, auto-sanación, herramientas de prueba (texto visible, esperas, comprobaciones, informe) y de escritorio con un controlador simulado. |
+| `mcp-server.test.mjs` | Protocolo stdio, las 46 herramientas, bucle QA → Dev → re-verificación, auto-sanación, herramientas de prueba (texto visible, esperas, comprobaciones, informe) y de escritorio con un controlador simulado. |
 | `patch-generator.test.mjs` | Recetas alineadas con las reglas del auditor, rechazo de selectores peligrosos. |
 | `dom-auditor.test.mjs` | Cada comprobación del auditor y la redacción de campos sensibles. |
 | `overlay.test.mjs` | Motor del overlay sobre jsdom: capas, cursores, pines, parches, tour, restauración exacta de la página y lector de página (esquema, búsqueda por texto, redacción). |
 | `extension.test.mjs` | Popup, script de contenido y service worker con `chrome.*` simulado. |
 | `cdp-bridge.test.mjs` | Puente CDP contra un servidor CDP simulado. |
+| `browser-launcher.test.mjs` | Localización del navegador, argumentos de arranque y rechazo de URLs que no sean http(s). |
 | `desktop-adapter.test.mjs` | Filtros y reglas del adaptador de escritorio. |
 
 ## Prueba de extremo a extremo
@@ -33,7 +34,8 @@ Lanza Chromium real y comprueba tres rutas:
 
 1. **Página standalone.** El tour reconstruye todas las capas y deja `document.body.innerHTML` idéntico.
 2. **Agente → MCP → bus → puente CDP.** Auditoría con tickets sin duplicados, auto-sanación verificada por re-auditoría, tour dirigido por MCP con progreso por eventos, clic real y rechazo de un rol de solo lectura. Incluye una prueba funcional completa hecha por el agente: captura, clic por texto, relleno por etiqueta, tres comprobaciones (una falla de verdad y crea un ticket) e informe.
-3. **Extensión MV3.** Emparejamiento (código incorrecto rechazado), `chrome.debugger`, tour, auditoría, clic, captura, hover y desconexión.
+3. **Arranque automático.** `swarm_open` lanza un navegador, conecta el enjambre y completa un tour con una sola llamada.
+4. **Extensión MV3.** Se conecta sola (sin código); el agente abre una pestaña y engancha otra sin ningún clic; después tour, auditoría, clic, captura, hover y desconexión.
 
 `npm run test:e2e -- --shots` regenera las capturas de `docs/media/`. Si Playwright no está instalado, el script lo indica y termina sin error.
 

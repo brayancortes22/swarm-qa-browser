@@ -2,6 +2,8 @@
 /**
  * Swarm QA command line: drive a connected tab through the running bus without an MCP client.
  *
+ *   npm run swarm -- open <url> [--tour] [--audit] [--agents 18] [--headless]
+ *                                           Open a browser on the URL with the swarm already attached
  *   npm run swarm -- status                 Connected tabs, tickets and the pairing code
  *   npm run swarm -- tour [--agents 18] [--speed 2]
  *   npm run swarm -- stop
@@ -12,7 +14,9 @@
  * Results are printed as JSON on stdout. Reports from `heal` are also written to .qa/.
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { openBrowserSession } from '../packages/cdp-adapter/src/browser-launcher.mjs';
 import { readBusRegistry } from '../packages/core/src/session-auth.mjs';
+import { startSwarmBus } from '../packages/core/src/swarm-bus.mjs';
 import { createHttpBusClient } from '../packages/mcp-server/src/bus-client.mjs';
 import { buildToolHandlers } from '../packages/mcp-server/src/tools.mjs';
 
@@ -25,16 +29,36 @@ for (let i = 0; i < rest.length; i += 1) {
   flags[key] = next === undefined || next.startsWith('--') ? true : Number.isNaN(Number(next)) ? next : Number(next);
 }
 
-const registry = readBusRegistry();
-if (!registry?.port || !registry?.token) {
-  console.error('No hay un bus en ejecución. Inícialo con: npm run start:bus');
+const print = (value) => console.log(JSON.stringify(value, null, 2));
+
+/** A bus that answers on the registered port, or null. */
+async function findRunningBus() {
+  const registry = readBusRegistry();
+  if (!registry?.port || !registry?.token) return null;
+  const host = registry.host === '::1' ? '[::1]' : registry.host || '127.0.0.1';
+  const url = `http://${host}:${registry.port}`;
+  const alive = await fetch(`${url}/health`, { signal: AbortSignal.timeout(1500) }).then(
+    (res) => res.ok,
+    () => false
+  );
+  return alive ? { url, token: registry.token } : null;
+}
+
+let ownedBus = null;
+let running = await findRunningBus();
+if (!running && command === 'open') {
+  // `open` is the zero-setup entry point: bring the bus up too.
+  ownedBus = await startSwarmBus();
+  running = { url: ownedBus.url, token: ownedBus.token };
+}
+if (!running) {
+  console.error('No hay un bus en ejecución. Usa "npm run swarm -- open <url>" o inícialo con: npm run start:bus');
   process.exit(1);
 }
-const host = registry.host === '::1' ? '[::1]' : registry.host || '127.0.0.1';
-const busUrl = `http://${host}:${registry.port}`;
-const client = createHttpBusClient(busUrl, registry.token);
-const tools = buildToolHandlers((action, params) => client.rpc(action, params));
-const print = (value) => console.log(JSON.stringify(value, null, 2));
+const busUrl = running.url;
+const registry = { token: running.token };
+const client = createHttpBusClient(busUrl, running.token);
+const tools = buildToolHandlers((action, params) => client.rpc(action, params), { openBrowser: (options) => openBrowserSession(options) });
 
 async function watch() {
   const res = await fetch(`${busUrl}/events`, { headers: { 'x-swarm-token': registry.token } });
@@ -60,6 +84,23 @@ async function watch() {
 }
 
 const commands = {
+  /** Opens a browser on the URL with the swarm attached and stays alive until Ctrl+C. */
+  async open() {
+    const url = rest.find((arg) => /^https?:\/\//i.test(arg));
+    if (!url) throw new Error('Indica la URL: npm run swarm -- open https://tu-sitio.com');
+    const session = await openBrowserSession({ url, headless: Boolean(flags.headless) });
+    await client.rpc('tabs.select', { tabId: session.tabId });
+    if (flags.agents) await tools.swarm_configure_swarm({ agents: flags.agents });
+    print({ ok: true, url, tabId: session.tabId, browser: session.executable, bus: busUrl });
+    if (flags.tour) print({ tour: await tools.swarm_start_tour(flags) });
+    if (flags.audit) print({ audit: (await tools.swarm_run_dom_audit({ follow: true })).findingsCount });
+    console.error('Enjambre activo. En otra terminal: npm run swarm -- tour | audit | heal.  Ctrl+C para cerrar.');
+    await new Promise((resolve) => {
+      for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, resolve);
+    });
+    await session.close();
+    await ownedBus?.close();
+  },
   async status() {
     const s = await tools.swarm_session_status({});
     print({

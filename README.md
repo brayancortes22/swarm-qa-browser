@@ -19,7 +19,18 @@ Un enjambre de cursores de IA que audita páginas web **en vivo** y una IA que *
 | **Pruebas dirigidas por IA** | El agente ve la página (captura o esquema), actúa por texto visible ("haz clic en *Entrar*"), espera condiciones, comprueba resultados y genera un informe de aprobado/fallido. |
 | **Control total del PC** | Captura de pantalla, ratón y teclado reales, ventanas y apertura de programas, en Windows y Linux (X11). Sin restricciones. |
 
-## Inicio rápido (sin instalar nada en el navegador)
+## Modo automático: una orden y el enjambre aparece
+
+No hay que instalar, emparejar ni aceptar nada. Una sola orden arranca el bus, abre un navegador en la web que quieras y deja el enjambre conectado:
+
+```bash
+npm install
+npm run swarm -- open https://tu-sitio.com --tour      # o --audit
+```
+
+Desde un agente por MCP es una sola herramienta: `swarm_open { url, tour: true }`. Si tienes la extensión instalada en tu Chrome, `swarm_open` abre la pestaña ahí (con tus sesiones); si no, lanza un navegador propio (Chrome, Edge, Brave o Chromium; `SWARM_BROWSER_PATH` para elegir otro).
+
+## Página de demostración
 
 ```bash
 npm install
@@ -32,13 +43,12 @@ Abre <http://127.0.0.1:5173>. En la barra inferior pulsa **Tour** o **Auditar**.
 
 Hay dos formas de conectar una pestaña al bus local. En ambas el agente usa las mismas herramientas.
 
-### A. Extensión de Chrome (recomendada)
+### A. Extensión de Chrome (tu navegador, con tus sesiones)
 
 1. `npm install` (genera `packages/extension/overlay.bundle.js`).
-2. `npm run start:bus`. La terminal muestra el **código de emparejamiento** (`XXXX-XXXX`).
-3. En `chrome://extensions` activa el modo de desarrollador, pulsa **Cargar descomprimida** y elige `packages/extension`.
-4. Abre tu aplicación, pulsa el icono de la extensión, escribe el código y pulsa **Vincular** (solo la primera vez).
-5. Acepta el consentimiento y pulsa **Habilitar permisos y arrancar enjambre**. Chrome mostrará la barra *"started debugging this browser"* mientras dure la sesión.
+2. En `chrome://extensions` activa el modo de desarrollador, pulsa **Cargar descomprimida** y elige `packages/extension`. Esto se hace una sola vez; es un requisito de Chrome.
+
+A partir de ahí no hay más pasos: la extensión se conecta sola al bus (reintenta cada 30 s) y tiene acceso a todos los sitios. El agente abre o engancha pestañas con `swarm_open`, `swarm_browser_tabs` y `swarm_attach_tab`. También puedes pulsar **Arrancar enjambre en esta pestaña** en el icono de la extensión. Chrome muestra la barra *"started debugging this browser"* mientras el enjambre está activo; esa barra es del navegador y no se puede quitar desde la extensión.
 
 ### B. Puente CDP (Chromium con depuración remota, webviews, CI)
 
@@ -63,12 +73,13 @@ Registra el servidor en tu cliente MCP con la ruta absoluta de tu copia del repo
 }
 ```
 
-Si no hay un bus en ejecución, el servidor MCP arranca uno embebido; el código de emparejamiento aparece en `swarm_session_status`.
+Si no hay un bus en ejecución, el servidor MCP arranca uno embebido.
 
-### Herramientas MCP (42)
+### Herramientas MCP (46)
 
 | Categoría | Herramientas |
 | :--- | :--- |
+| Arranque automático | `swarm_open`, `swarm_browser_tabs`, `swarm_attach_tab`, `swarm_close_browser` |
 | Sesión | `swarm_session_status`, `swarm_select_tab`, `swarm_await_event` |
 | Enjambre | `swarm_configure_swarm`, `swarm_start_tour`, `swarm_stop_tour`, `swarm_spawn_cursors`, `swarm_move_cursor` |
 | Orquestación | `swarm_post_message`, `swarm_apply_fix` |
@@ -132,7 +143,8 @@ swarm_desktop_key   { keys: "ctrl+s" }
 Con un bus en ejecución y una pestaña conectada:
 
 ```bash
-npm run swarm -- status          # pestañas, tickets y código de emparejamiento
+npm run swarm -- open https://tu-sitio.com --tour   # arranca todo y deja el enjambre en esa web
+npm run swarm -- status          # pestañas conectadas y tickets
 npm run swarm -- tour --agents 18 --speed 2
 npm run swarm -- audit --follow  # audita y crea tickets; --follow hace scroll hasta cada hallazgo
 npm run swarm -- heal            # parchea, re-audita y guarda .qa/heal-report.json y .qa/patches.json
@@ -144,7 +156,7 @@ Los parches de `heal` solo viven en la página abierta. `.qa/patches.json` conti
 ## Desarrollo
 
 ```bash
-npm test                   # 58 pruebas unitarias y de integración (node:test + jsdom)
+npm test                   # 63 pruebas unitarias y de integración (node:test + jsdom)
 npm run test:e2e           # flujo completo en Chromium real; necesita Playwright
 npm run test:e2e:desktop   # ratón y teclado reales sobre una ventana visible
 npm run lint
@@ -159,7 +171,7 @@ Para la prueba E2E: `npm i -D playwright && npx playwright install chromium`. De
 packages/
   core/             Bus local (HTTP + WebSocket + SSE), tickets, candados, emparejamiento, parches
   overlay/          Motor del enjambre: cursores, selección, reglas, tour, auditor, pines, HUD
-  mcp-server/       Servidor MCP por stdio (42 herramientas)
+  mcp-server/       Servidor MCP por stdio (46 herramientas)
   extension/        Extensión Chrome MV3 (chrome.debugger, consentimiento, emparejamiento)
   cdp-adapter/      Puente CDP para Chromium con depuración remota
   desktop-adapter/  Control del PC: pantalla, ratón, teclado y ventanas (Windows y Linux/X11)
@@ -175,6 +187,16 @@ test/               Pruebas unitarias, de integración y E2E
 - [Hoja de ruta y estado real](PLAN.md)
 - [Visión de producto](docs/SWARM_QA_PLATFORM_SPEC.md)
 - Checklists: [seguridad](docs/checklists/security.md), [UX](docs/checklists/ux.md), [pruebas](docs/checklists/tests.md)
+
+## Sin protecciones, por decisión del propietario
+
+Este proyecto está configurado para no pedir nada a la persona:
+
+- La extensión obtiene el acceso al bus sin código de emparejamiento y puede actuar en **cualquier sitio**, incluidos aquellos donde tengas la sesión iniciada.
+- No hay pantalla de consentimiento antes de activar el depurador en una pestaña.
+- Las herramientas `swarm_desktop_*` controlan todo el equipo sin límites.
+
+Consecuencia: cualquier agente conectado al servidor MCP, y cualquier programa de tu equipo que hable con el bus local, puede abrir páginas, hacer clic y escribir en tu navegador y en tu escritorio. Úsalo solo con agentes en los que confíes. Para volver a exigir el código de emparejamiento, arranca el bus con `SWARM_REQUIRE_PAIR_CODE=1`.
 
 ## Límites conocidos
 

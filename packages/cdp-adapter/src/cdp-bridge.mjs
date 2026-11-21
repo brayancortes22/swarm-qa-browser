@@ -187,6 +187,7 @@ export async function connectCdpBridge({
     state.consoleNet.push({ ...e, ts: Date.now(), untrustedPageData: true });
     if (state.consoleNet.length > 100) state.consoleNet.shift();
   };
+  let mountSeq = 0;
   let mountQueue = Promise.resolve(),
     pendingMount = null,
     closing = null,
@@ -321,12 +322,17 @@ export async function connectCdpBridge({
       state.isolated = isolated;
       state.contextId = ctxId;
       state.contextCleared = false;
+      // A fresh binding per mount: a second mount in the same document (e.g. on the load event) reuses the
+      // isolated world, where the previous mount already consumed and removed its binding function.
+      mountSeq += 1;
+      const mountBinding = `${bindingName}_${mountSeq}`;
+      state.bindingName = mountBinding;
       await cdp
-        .send('Runtime.addBinding', isolated ? { name: bindingName, executionContextId: ctxId } : { name: bindingName })
-        .catch(() => (isolated ? cdp.send('Runtime.addBinding', { name: bindingName }) : null))
+        .send('Runtime.addBinding', isolated ? { name: mountBinding, executionContextId: ctxId } : { name: mountBinding })
+        .catch(() => (isolated ? cdp.send('Runtime.addBinding', { name: mountBinding }) : null))
         .catch(() => {});
       const res = await cdp.send('Runtime.evaluate', {
-        expression: buildMountExpr(nonce, bindingName, isolated),
+        expression: buildMountExpr(nonce, mountBinding, isolated),
         ...(ctxId != null ? { contextId: ctxId } : {}),
         returnByValue: false,
         awaitPromise: true
@@ -395,7 +401,7 @@ export async function connectCdpBridge({
     } else if (method === 'Page.navigatedWithinDocument') {
       if (p.url) state.url = sanitizePageText(p.url, 512);
       for (const w of [...loadWaiters]) if (w.sameDoc) w.done(false, null);
-    } else if (method === 'Runtime.bindingCalled' && p.name === bindingName) {
+    } else if (method === 'Runtime.bindingCalled' && p.name === state.bindingName) {
       if (state.isolated && state.contextId != null && p.executionContextId != null && p.executionContextId !== state.contextId) return;
       let ev;
       try {
@@ -492,7 +498,21 @@ export async function connectCdpBridge({
     throw err;
   }
   busWs.on('close', () => close());
-  return { close, tabId, target };
+  /**
+   * Resolves once the page has finished loading and the overlay mounted for that load is in place.
+   * A page that is still loading re-mounts the overlay on its load event, wiping anything started before.
+   */
+  const whenLoaded = async (timeoutMs = 15_000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const state = await cdp.send('Runtime.evaluate', { expression: 'document.readyState', returnByValue: true }).catch(() => null);
+      if (state?.result?.value === 'complete') break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await new Promise((r) => setTimeout(r, 200));
+    await mountQueue;
+  };
+  return { close, tabId, target, whenLoaded };
 }
 
 if (process.argv[1] && resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase()) {

@@ -6,7 +6,7 @@
  *   npm run test:e2e -- --shots   # also refreshes docs/media/*.png
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -79,7 +79,7 @@ if (shotsDir) mkdirSync(shotsDir, { recursive: true });
 const shot = async (page, name) => shotsDir && page.screenshot({ path: join(shotsDir, `${name}.png`) });
 const step = (label) => console.log(`  ✓ ${label}`);
 
-/** Loads the unpacked extension in Chromium and runs pairing → authorize → tour → audit → click → detach. */
+/** Loads the unpacked extension in Chromium: it connects alone and the agent opens/attaches tabs, then tour → audit → click → detach. */
 async function runExtensionFlow() {
   const extensionPath = fileURLToPath(new URL('../../packages/extension', import.meta.url));
   let context;
@@ -97,8 +97,6 @@ async function runExtensionFlow() {
     const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker', { timeout: 15_000 }));
     const extensionId = new URL(worker.url()).host;
     assert.equal(extensionId, bus.extensionId, 'manifest key must yield the extension id the bus trusts');
-    const target = await context.newPage();
-    await target.goto(`${demo.url}/?bare=1`);
     const popup = await context.newPage();
     await popup.goto(`chrome-extension://${extensionId}/popup.html`);
     const send = (message) => popup.evaluate((msg) => chrome.runtime.sendMessage(msg), message);
@@ -110,18 +108,41 @@ async function runExtensionFlow() {
       });
       return res.json();
     };
-    const tabId = await worker.evaluate(async (base) => (await chrome.tabs.query({})).find((t) => t.url?.startsWith(base))?.id, demo.url);
 
+    // Only test plumbing: this bus is on a random port. With the default port nothing has to be set.
     await send({ type: 'set_port', port: bus.port });
-    assert.equal((await send({ type: 'set_pair_code', code: 'AAAA-AAAA' })).pairState, 'invalid');
-    assert.deepEqual(await send({ type: 'set_pair_code', code: bus.pairingCode }), { ok: true, busConnected: true, pairState: 'ok' });
-    const session = await send({ type: 'authorize_tab', tabId, url: `${demo.url}/?bare=1`, probeEnabled: true });
-    assert.equal(session.tab?.debuggerAttached, true, JSON.stringify(session));
+    for (let i = 0; i < 40 && !(await rpc('session.status')).result.browserConnected; i += 1) await new Promise((r) => setTimeout(r, 150));
+    assert.equal((await rpc('session.status')).result.browserConnected, true, 'the extension connects by itself, with no pairing code');
+
+    // The agent opens the site in this Chrome and gets the swarm attached, with no click anywhere.
+    const openedHere = await callTool('swarm_open', { url: `${demo.url}/?bare=1&ext=1` });
+    assert.equal(openedHere.browser, 'extension');
+    const tabId = openedHere.tabId;
+    const target = context.pages().find((p) => p.url().includes('ext=1'));
+    assert.ok(target, 'the tab opened by the agent exists in the browser');
+    await target.waitForFunction(() => Boolean(document.getElementById('__swarm_qa_overlay')));
+    assert.ok((await rpc('session.status')).result.tabs.some((t) => t.tabId === tabId));
+
+    // A tab the person already had open can be attached by the agent too.
+    const other = await context.newPage();
+    await other.goto(`${demo.url}/?bare=1&second=1`);
+    const listed = (await callTool('swarm_browser_tabs', {})).tabs;
     assert.deepEqual(
-      (await rpc('session.status')).result.tabs.map((t) => t.tabId),
-      [tabId]
+      listed
+        .filter((t) => t.url.includes('bare=1'))
+        .map((t) => [t.url.includes('ext=1'), t.attached])
+        .sort(),
+      [
+        [false, false],
+        [true, true]
+      ]
     );
-    step('paired with the code (wrong code rejected), debugger attached, tab registered on the bus');
+    const attached = await callTool('swarm_attach_tab', { urlIncludes: 'second=1' });
+    await other.waitForFunction(() => Boolean(document.getElementById('__swarm_qa_overlay')));
+    assert.equal((await send({ type: 'detach_tab', tabId: attached.tabId })).ok, true);
+    await other.close();
+    await rpc('tabs.select', { tabId });
+    step('extension connected by itself; the agent opened one tab and attached another with no code, consent or click');
 
     await target.bringToFront();
     assert.equal((await rpc('tab.command', { tabId, command: { action: 'start_tour', speed: 4 } })).result.running, true);
@@ -156,7 +177,10 @@ async function runExtensionFlow() {
 
     assert.equal((await send({ type: 'detach_tab', tabId })).ok, true);
     await bus.waitForEvent((await rpc('session.status')).result.seq - 1, 3000);
-    assert.equal((await rpc('session.status')).result.tabs.length, 0);
+    assert.equal(
+      (await rpc('session.status')).result.tabs.some((t) => t.tabId === tabId),
+      false
+    );
     await target.waitForFunction(() => !document.getElementById('__swarm_qa_overlay'));
     step('detach removed the overlay and the tab left the bus immediately');
   } finally {
@@ -323,6 +347,42 @@ try {
   assert.equal(await page.getAttribute('#theme-toggle', 'aria-label'), null, 'closing the bridge reverts hot patches');
   assert.deepEqual(pageErrors, []);
   step('bridge shutdown removed the overlay and reverted hot patches; no page errors');
+
+  console.log('Automatic start (swarm_open: no extension, no pairing, no clicks)');
+  const userDataDir = join(tmp, 'auto-profile');
+  // Use Playwright's chrome-headless-shell for the headless launch: the full Chrome build segfaults
+  // headless on the CI runner (tiny /dev/shm). The shell is the binary Playwright uses for headless.
+  const fullChrome = chromium.executablePath();
+  const headlessShell = fullChrome
+    .replace('/chromium-', '/chromium_headless_shell-')
+    .replace('/chrome-linux64/chrome', '/chrome-headless-shell-linux64/chrome-headless-shell');
+  process.env.SWARM_BROWSER_PATH = existsSync(headlessShell) ? headlessShell : fullChrome;
+  const opened = await callTool('swarm_open', { url: `${demo.url}/?bare=1&auto=1`, headless: true, agents: 14, tour: true, speed: 4 });
+  assert.equal(opened.tour.running, true);
+  const afterOpen = await callTool('swarm_session_status');
+  assert.equal(afterOpen.selectedTabId, opened.tabId);
+  assert.ok(afterOpen.tabs.some((t) => t.tabId === opened.tabId && t.url.includes('auto=1')));
+  let autoDone = null;
+  for (let since = afterOpen.seq - 5; !autoDone;) {
+    const batch = await callTool('swarm_await_event', { sinceSeq: since, timeoutMs: 20_000 });
+    assert.equal(batch.timedOut, false, 'tour_done never arrived from the launched browser');
+    since = batch.seq;
+    autoDone = batch.events.find((e) => e.tabId === opened.tabId && e.payload?.type === 'tour_done');
+  }
+  assert.equal(autoDone.payload.done, opened.tour.total);
+  assert.equal(
+    (await callTool('swarm_run_dom_audit', { tabId: opened.tabId, animate: false, createTickets: false })).findingsCount > 0,
+    true
+  );
+  assert.equal((await callTool('swarm_close_browser', {})).closed, 1);
+  assert.equal(
+    (await callTool('swarm_session_status')).tabs.some((t) => t.tabId === opened.tabId),
+    false
+  );
+  step(
+    `one call opened ${opened.browser.split('/').pop()}, attached the swarm and ran a ${opened.tour.total}-layer tour; closing it removed the tab`
+  );
+  void userDataDir;
 
   console.log('Chrome extension (MV3, chrome.debugger)');
   await runExtensionFlow();

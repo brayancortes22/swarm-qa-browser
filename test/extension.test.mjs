@@ -96,7 +96,7 @@ function makePopupEnv({ tab = { id: 101, url: 'http://localhost:5173/player' }, 
       const listeners = new Map();
       const el = {
         id,
-        textContent: id === 'enableBtn' ? 'Habilitar permisos y arrancar enjambre' : '',
+        textContent: id === 'enableBtn' ? 'Arrancar enjambre en esta pestaña' : '',
         className: '',
         title: '',
         value: id === 'portInput' ? '47921' : '',
@@ -301,7 +301,7 @@ function makeBackgroundEnv({
 }
 
 describe('extension MV3 (popup, content, background)', () => {
-  it('popup.js gates enable button by consent, disables on sessionActive, and reverts on detach', async () => {
+  it('popup.js starts a session with one click (no consent gate, no permission prompt) and stops it', async () => {
     const orig = { doc: globalThis.document, chrome: globalThis.chrome, URL: globalThis.URL, Blob: globalThis.Blob };
     let session = null;
     const permReqs = [],
@@ -347,34 +347,24 @@ describe('extension MV3 (popup, content, background)', () => {
     try {
       await import(`../packages/extension/popup.js?case=${++modSeq}`);
       await new Promise((r) => setTimeout(r, 15));
-      assert.equal(env.elems.enableBtn.disabled, true);
-      assert.equal(env.elems.enableBtn.textContent, 'Habilitar permisos y arrancar enjambre');
+      assert.equal(env.elems.enableBtn.disabled, false, 'ready to start on any http(s) tab without ticking anything');
+      assert.equal(env.elems.enableBtn.textContent, 'Arrancar enjambre en esta pestaña');
       assert.equal(env.elems.detachBtn.disabled, true);
 
-      env.elems.consentCheck.checked = true;
-      await env.elems.consentCheck.trigger('change');
-      assert.equal(env.elems.enableBtn.disabled, false);
-
       await env.elems.enableBtn.trigger('click');
-      assert.deepEqual(permReqs, [{ origins: ['https://app.example.com/*'] }]);
+      assert.deepEqual(permReqs, [], 'no per-site permission prompt: the extension has access to every site');
       assert.equal(env.elems.enableBtn.disabled, true);
       assert.equal(env.elems.enableBtn.textContent, 'Sesión activa en esta pestaña');
       assert.equal(env.elems.detachBtn.disabled, false);
       assert.equal(env.elems.exportBtn.disabled, false);
 
-      // Toggling consentCheck while sessionActive remains disabled
-      env.elems.consentCheck.checked = false;
-      await env.elems.consentCheck.trigger('change');
-      assert.equal(env.elems.enableBtn.disabled, true);
-
       await env.elems.exportBtn.trigger('click');
       assert.equal(env.downloads[0]?.download, 'swarm-qa-findings-101.json');
 
       await env.elems.detachBtn.trigger('click');
-      assert.deepEqual(permRems, [{ origins: ['https://app.example.com/*'] }]);
-      assert.equal(env.elems.consentCheck.checked, false);
-      assert.equal(env.elems.enableBtn.textContent, 'Habilitar permisos y arrancar enjambre');
-      assert.equal(env.elems.enableBtn.disabled, true);
+      assert.deepEqual(permRems, []);
+      assert.equal(env.elems.enableBtn.textContent, 'Arrancar enjambre en esta pestaña');
+      assert.equal(env.elems.enableBtn.disabled, false);
       assert.equal(env.elems.detachBtn.disabled, true);
     } finally {
       globalThis.document = orig.doc;
@@ -532,9 +522,16 @@ describe('extension MV3 (popup, content, background)', () => {
 
       // Start bus after authorization and await auto-reconnect hello
       bus = await startSwarmBus({ port, autoFallbackPort: false, registryPath: tmp.registryPath });
-      const helloEv = await bus.waitForEvent(0, 4500);
+      // The extension first announces itself (extension_hello), then re-registers its tab.
+      const seen = [];
+      for (let since = 0; !seen.some((e) => e.type === 'tab_hello' && e.tabId === 101);) {
+        const batch = await bus.waitForEvent(since, 4500);
+        assert.equal(batch.timedOut, false, `no tab_hello after reconnect; saw ${seen.map((e) => e.type).join(', ')}`);
+        seen.push(...batch.events);
+        since = batch.seq;
+      }
       assert.equal(
-        helloEv.events.some((e) => e.type === 'tab_hello' && e.tabId === 101),
+        seen.some((e) => e.type === 'browser_connected'),
         true
       );
 

@@ -47,7 +47,7 @@ export async function hasHostPermission(rawUrl) {
 
 function scheduleReconnect() {
   // A missing/rejected pairing code needs the user, not retries (retries would trip the bus rate limit).
-  if (reconnectTimer || !authorizedTabs.size || pairState === 'missing' || pairState === 'invalid') return;
+  if (reconnectTimer || pairState === 'missing' || pairState === 'invalid') return;
   const wait = retryMs;
   retryMs = Math.min(10000, retryMs * 2);
   reconnectTimer = setTimeout(() => {
@@ -68,28 +68,24 @@ async function connectBus() {
     const ctl = new AbortController(),
       timer = setTimeout(() => ctl.abort(), 1200);
     const pairCode = await loadPairCode();
-    if (pairState === 'invalid') {
+    if (pairState === 'invalid' || pairState === 'missing') {
       clearTimeout(timer);
-      throw new Error('Código de emparejamiento incorrecto');
-    }
-    if (!pairCode) {
-      clearTimeout(timer);
-      pairState = 'missing';
-      throw new Error('Falta el código de emparejamiento');
+      throw new Error(pairState === 'missing' ? 'El bus exige código de emparejamiento' : 'Código de emparejamiento incorrecto');
     }
     let pairRes;
     try {
       pairRes = await fetch(`http://127.0.0.1:${busPort}/pair`, {
         method: 'POST',
-        headers: { 'x-swarm-pair-code': pairCode },
+        headers: pairCode ? { 'x-swarm-pair-code': pairCode } : {},
         signal: ctl.signal
       });
     } finally {
       clearTimeout(timer);
     }
     if (pairRes.status === 401) {
-      pairState = 'invalid';
-      throw new Error('Código de emparejamiento incorrecto');
+      // Only buses started in strict mode ask for a code.
+      pairState = pairCode ? 'invalid' : 'missing';
+      throw new Error(pairCode ? 'Código de emparejamiento incorrecto' : 'El bus exige código de emparejamiento');
     }
     if (pairRes.status === 429) {
       pairState = 'locked';
@@ -124,6 +120,8 @@ async function connectBus() {
       );
     });
     ws = sock;
+    // Announce that this browser can open and attach tabs on request, with or without sessions.
+    sock.send(JSON.stringify({ type: 'extension_hello' }));
     retryMs = 2000;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
@@ -143,6 +141,7 @@ async function connectBus() {
           }
         }
         if (m?.type === 'command') handleBusCommand(m);
+        if (m?.type === 'browser_command') handleBrowserCommand(m);
       } catch {}
     });
     sock.addEventListener('close', () => {
@@ -221,7 +220,7 @@ function syncTabAfterNav(tabId, tab) {
   }));
 }
 
-async function detachSession(tabId, { keepWs = false, tabAlive = true } = {}) {
+async function detachSession(tabId, { tabAlive = true } = {}) {
   const entry = authorizedTabs.get(tabId);
   if (!entry) return { ok: true };
   authorizedTabs.delete(tabId);
@@ -236,20 +235,6 @@ async function detachSession(tabId, { keepWs = false, tabAlive = true } = {}) {
       } catch {}
   }
   if (entry.helloSent && ws?.readyState === 1) sendWs({ type: 'tab_closed', tabId });
-  if (!keepWs && authorizedTabs.size === 0) {
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
-    if (ws) {
-      const old = ws;
-      ws = null;
-      stopKeepalive();
-      try {
-        old.close();
-      } catch {}
-    }
-  }
   return { ok: true };
 }
 
@@ -295,13 +280,13 @@ const ready = (async () => {
     await syncTabAfterNav(tabId, liveTab).catch(() => {});
   }
   await saveSessionTabs(authorizedTabs);
-  if (authorizedTabs.size && !(await connectBus().catch(() => false))) scheduleReconnect();
+  if (!(await connectBus().catch(() => false))) scheduleReconnect();
 })();
 
 async function authorizeTab({ tabId, url, probeEnabled = true }) {
   if (!Number.isInteger(tabId) || !(await hasHostPermission(url)))
     throw new Error('Solo se admiten pestañas http:// o https:// con permiso de origen');
-  if (authorizedTabs.has(tabId)) await detachSession(tabId, { keepWs: true });
+  if (authorizedTabs.has(tabId)) await detachSession(tabId);
   const entry = entryOf(tabId, url, probeEnabled, false, true);
   authorizedTabs.set(tabId, entry);
   try {
@@ -318,7 +303,7 @@ async function authorizeTab({ tabId, url, probeEnabled = true }) {
     else if (!entry.helloSent) await sendHello(entry, true);
     return { ok: true, tab: publicTab(entry), busConnected: ws?.readyState === 1 };
   } catch (err) {
-    await detachSession(tabId, { keepWs: true });
+    await detachSession(tabId);
     throw err;
   }
 }
@@ -396,6 +381,71 @@ const emitEvent = async (msg, tid) => {
   sendWs({ type: 'finding_event', tabId: tid, eventType: msg.type, payload: msg.action ?? msg.event });
   return { ok: true };
 };
+/**
+ * Browser-level commands from the bus: the agent can list tabs, open a URL or attach the swarm to
+ * a tab on its own — no click in the popup is needed.
+ */
+async function handleBrowserCommand({ commandId, command = {} }) {
+  const reply = (payload) => sendWs({ type: 'command_result', commandId, ...payload });
+  try {
+    await ready;
+    const action = command.action;
+    if (action === 'list_tabs') {
+      const tabs = await chrome.tabs.query({});
+      const list = tabs
+        .filter((t) => /^https?:/i.test(t.url || ''))
+        .map((t) => ({
+          tabId: t.id,
+          url: t.url,
+          title: t.title || '',
+          active: Boolean(t.active),
+          attached: authorizedTabs.get(t.id)?.debuggerAttached === true
+        }));
+      return reply({ ok: true, result: { tabs: list } });
+    }
+    if (action === 'open_tab') {
+      const url = new URL(String(command.url || ''));
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Only http/https URLs can be opened');
+      const tab = await chrome.tabs.create({ url: url.href, active: command.active !== false });
+      // Poll instead of listening: the load may finish before a listener could be registered.
+      for (let waited = 0; waited < 15000 && (await chrome.tabs.get(tab.id))?.status !== 'complete'; waited += 150) {
+        await new Promise((done) => setTimeout(done, 150));
+      }
+      const session = await authorizeTab({ tabId: tab.id, url: (await chrome.tabs.get(tab.id))?.url || url.href, probeEnabled: true });
+      return reply({ ok: true, result: { tabId: tab.id, ...session } });
+    }
+    if (action === 'attach_tab') {
+      const tabs = await chrome.tabs.query({});
+      const wanted = String(command.urlIncludes || '').toLowerCase();
+      const tab = tabs.find((t) =>
+        command.tabId != null
+          ? t.id === command.tabId
+          : wanted
+            ? String(t.url || '')
+                .toLowerCase()
+                .includes(wanted)
+            : t.active
+      );
+      if (!tab) throw new Error('No matching tab is open');
+      const session = await authorizeTab({ tabId: tab.id, url: tab.url, probeEnabled: true });
+      return reply({ ok: true, result: { tabId: tab.id, ...session } });
+    }
+    if (action === 'detach_tab') return reply({ ok: true, result: await detachSession(command.tabId) });
+    throw new Error(`Unknown browser command "${String(action).slice(0, 40)}"`);
+  } catch (err) {
+    reply({ ok: false, error: String(err?.message || err).slice(0, 280) });
+  }
+}
+
+// Connect on browser start, on install/update and every 30 s, so the swarm is available without opening the popup.
+const autoConnect = () => connectBus().catch(() => false);
+chrome.runtime.onStartup?.addListener(autoConnect);
+chrome.runtime.onInstalled?.addListener(autoConnect);
+chrome.alarms?.create('swarm-connect', { periodInMinutes: 0.5 });
+chrome.alarms?.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'swarm-connect') autoConnect();
+});
+
 const RUNTIME_HANDLERS = {
   async route_changed(msg, tid) {
     const e = authorizedTabs.get(tid);
@@ -438,7 +488,7 @@ const RUNTIME_HANDLERS = {
     }
     for (const e of authorizedTabs.values()) e.helloSent = false;
     const ok = await connectBus().catch(() => false);
-    if (!ok && authorizedTabs.size) scheduleReconnect();
+    if (!ok) scheduleReconnect();
     return { ok: true, busConnected: ok, pairState };
   },
   async set_port(msg) {
@@ -456,7 +506,7 @@ const RUNTIME_HANDLERS = {
     }
     for (const e of authorizedTabs.values()) e.helloSent = false;
     const ok = await connectBus().catch(() => false);
-    if (!ok && authorizedTabs.size) scheduleReconnect();
+    if (!ok) scheduleReconnect();
     return { ok: true, port: busPort, busConnected: ok };
   },
   async export_findings(_msg, tid) {

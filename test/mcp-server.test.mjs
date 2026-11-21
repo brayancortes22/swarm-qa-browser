@@ -35,6 +35,10 @@ const EXPECTED_TOOLS = [
   'swarm_heal_findings',
   'swarm_verify_finding',
   'swarm_await_event',
+  'swarm_open',
+  'swarm_browser_tabs',
+  'swarm_attach_tab',
+  'swarm_close_browser',
   'swarm_post_message',
   'swarm_apply_fix',
   'swarm_screenshot',
@@ -160,7 +164,7 @@ function connectMockTab(
 }
 
 describe('mcp-server tools & stdio transport', () => {
-  it('exposes all 42 tool schemas and handles initialize, notifications, and tools/list (plus Content-Length)', async () => {
+  it('exposes all 46 tool schemas and handles initialize, notifications, and tools/list (plus Content-Length)', async () => {
     assert.equal(SWARM_TOOLS.length, EXPECTED_TOOLS.length);
     for (const name of EXPECTED_TOOLS) {
       const tool = SWARM_TOOLS.find((t) => t.name === name);

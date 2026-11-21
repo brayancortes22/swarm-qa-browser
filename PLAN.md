@@ -2,7 +2,7 @@
 
 Este documento separa lo que **funciona y está probado** de lo que está pendiente. Si una línea no tiene una prueba que la respalde, no aparece como hecha.
 
-## Hecho (v0.3)
+## Hecho (v0.4)
 
 - Motor de enjambre en tiempo real: hasta 32 cursores, selección con medidas, reglas, guías y sonido opcional.
 - Tour de reconstrucción reversible, con velocidad 1×/2×/4× y scroll automático.
@@ -13,6 +13,7 @@ Este documento separa lo que **funciona y está probado** de lo que está pendie
 - CLI `npm run swarm`, página de demostración, lint, formato y CI.
 - Pruebas dirigidas por IA en la web: captura, esquema de página, acciones por texto visible, esperas, comprobaciones con reintento e informe en `.qa/`.
 - Orquestación visible: bitácora en la página, notas automáticas de cada revisor y correcciones propias del orquestador verificadas por re-auditoría (`swarm_apply_fix`).
+- Arranque automático: `swarm_open` y `npm run swarm -- open <url>` dejan el enjambre en cualquier web sin emparejar, aceptar ni pulsar nada; la extensión se conecta sola y el agente abre o engancha pestañas.
 - Control total del PC por MCP (pantalla, ratón, teclado, ventanas, abrir programas). Probado de extremo a extremo en Linux/X11.
 
 ## Siguiente

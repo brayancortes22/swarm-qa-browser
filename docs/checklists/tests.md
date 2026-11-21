@@ -1,6 +1,6 @@
 # Checklist de pruebas
 
-- [x] `npm test`: 58 pruebas en verde (unitarias e integración). Ver [docs/testing.md](../testing.md).
+- [x] `npm test`: 63 pruebas en verde (unitarias e integración). Ver [docs/testing.md](../testing.md).
 - [x] `npm run test:e2e`: página standalone, puente CDP + MCP y extensión MV3 en Chromium real.
 - [x] `npm run lint` y `npm run format:check` sin errores.
 - [x] El bundle del overlay se genera y se verifica en cada `npm install` y `npm test`.

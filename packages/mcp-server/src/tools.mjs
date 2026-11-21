@@ -21,6 +21,7 @@ const REVIEWER_BY_CATEGORY = {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const pick = (source, keys) => Object.fromEntries(keys.filter((key) => source?.[key] !== undefined).map((key) => [key, source[key]]));
 const findTab = (status, tabId) => status.tabs.find((tab) => tab.tabId === (tabId ?? status.selectedTabId)) || null;
+const isFiniteCount = (value) => Number.isFinite(Number(value)) && value !== null && value !== '' && value !== undefined;
 const isAutomated = (ticket) => Boolean(ticket.ruleId) && ticket.ruleId !== 'manual';
 
 /** True when a fresh audit finding is the same defect a ticket tracks. */
@@ -48,7 +49,7 @@ function createCursorRegistry() {
  * Builds the MCP tool handlers. `call(action, params)` performs a bus RPC; handlers return plain
  * JSON that the transport serializes into the MCP `tools/call` result.
  */
-export function buildToolHandlers(call, { desktopDriver, recorder = createTestRecorder() } = {}) {
+export function buildToolHandlers(call, { desktopDriver, openBrowser, closeBrowsers, recorder = createTestRecorder() } = {}) {
   const cursors = createCursorRegistry();
 
   /** Re-sends each tab's tickets and counters to its overlay so pins match the store. */
@@ -427,6 +428,44 @@ export function buildToolHandlers(call, { desktopDriver, recorder = createTestRe
 
   return {
     swarm_session_status: (a) => call('session.status', { tabId: a.tabId }),
+
+    /**
+     * Fully automatic start: opens a browser window on the URL, already attached to the swarm,
+     * selects it and can start a tour or an audit right away. Nothing to install, pair or enable.
+     */
+    async swarm_open(a) {
+      const status = await call('session.status', {});
+      const viaExtension = a.mode !== 'launch' && status.browserConnected;
+      let tabId;
+      let browser;
+      if (viaExtension) {
+        // The user's own Chrome (their sessions and logins), through the connected extension.
+        tabId = (await call('browser.command', { command: { action: 'open_tab', url: a.url } })).tabId;
+        browser = 'extension';
+      } else {
+        if (typeof openBrowser !== 'function') throw new Error('No browser extension is connected and this client cannot launch a browser');
+        const session = await openBrowser(pick(a, ['url', 'headless', 'executablePath', 'width', 'height']));
+        tabId = session.tabId;
+        browser = session.executable;
+      }
+      await call('tabs.select', { tabId });
+      if (isFiniteCount(a.agents)) await call('tab.command', { tabId, command: { action: 'configure_swarm', agents: a.agents } });
+      const tour = a.tour ? await call('tab.command', { tabId, command: { action: 'start_tour', ...pick(a, ['agents', 'speed']) } }) : null;
+      const audit = a.audit && !a.tour ? await runDomAudit({ tabId, follow: true }) : null;
+      return { ok: true, tabId, url: a.url, browser, ...(tour ? { tour } : {}), ...(audit ? { audit } : {}) };
+    },
+    /** Tabs open in the user's browser (needs the extension). */
+    swarm_browser_tabs: () => call('browser.command', { command: { action: 'list_tabs' } }),
+    /** Attaches the swarm to a tab that is already open: by id, by part of its URL, or the active one. */
+    async swarm_attach_tab(a) {
+      const attached = await call('browser.command', { command: { action: 'attach_tab', ...pick(a, ['tabId', 'urlIncludes']) } });
+      await call('tabs.select', { tabId: attached.tabId });
+      return attached;
+    },
+    async swarm_close_browser(a) {
+      if (typeof closeBrowsers !== 'function') return { ok: true, closed: 0 };
+      return { ok: true, closed: await closeBrowsers(a.tabId) };
+    },
     swarm_select_tab: (a) => call('tabs.select', { tabId: a.tabId }),
 
     async swarm_spawn_cursors(a) {

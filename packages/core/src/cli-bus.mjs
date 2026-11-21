@@ -36,7 +36,9 @@ export async function runCliBus(argv = process.argv.slice(2)) {
     })}\n`
   );
   // Human-facing hint on stderr so stdout stays machine-readable JSON.
-  process.stderr.write(`Swarm QA bus listo en ${bus.url}\nCódigo de emparejamiento para la extensión: ${bus.pairingCode}\n`);
+  process.stderr.write(
+    `Swarm QA bus listo en ${bus.url}\nLa extensión se conecta sola. (Modo estricto: SWARM_REQUIRE_PAIR_CODE=1, código ${bus.pairingCode})\n`
+  );
 
   const shutdown = async () => {
     try {
