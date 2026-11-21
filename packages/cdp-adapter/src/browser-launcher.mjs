@@ -60,7 +60,10 @@ export function browserArgs({ url, userDataDir, headless = false, width = 1440, 
     '--no-first-run',
     '--no-default-browser-check',
     `--window-size=${width},${height}`,
-    ...(headless ? ['--headless=new'] : []),
+    // Headless in a container/CI: a small /dev/shm makes Chrome segfault on startup, and the GPU
+    // process has nothing to talk to. These flags are the standard fix and are headless-only so a
+    // real desktop window keeps hardware acceleration.
+    ...(headless ? ['--headless=new', '--disable-dev-shm-usage', '--disable-gpu'] : []),
     // Chromium refuses to start its sandbox as root (containers, CI).
     ...(isRoot ? ['--no-sandbox'] : []),
     url

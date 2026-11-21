@@ -29,9 +29,15 @@ test('findBrowserExecutable honours explicit paths and env overrides and explain
 test('browserArgs uses a private profile and a self-chosen debug port, and never passes the URL as a flag', () => {
   const args = browserArgs({ url: 'https://example.com/a?b=--evil', userDataDir: '/tmp/p', headless: true, isRoot: false });
   assert.deepEqual(args.slice(0, 2), ['--remote-debugging-port=0', '--user-data-dir=/tmp/p']);
-  assert.ok(args.includes('--headless=new') && !args.includes('--no-sandbox'));
+  assert.ok(
+    ['--headless=new', '--disable-dev-shm-usage', '--disable-gpu'].every((f) => args.includes(f)),
+    'headless gets the CI-hardening flags'
+  );
+  assert.ok(!args.includes('--no-sandbox'));
   assert.equal(args.at(-1), 'https://example.com/a?b=--evil');
-  assert.ok(browserArgs({ url: 'http://a.test/', userDataDir: '/p', isRoot: true }).includes('--no-sandbox'));
+  // A headed window keeps hardware acceleration and does not force the shm/gpu workarounds.
+  const headed = browserArgs({ url: 'http://a.test/', userDataDir: '/p', isRoot: true });
+  assert.ok(headed.includes('--no-sandbox') && !headed.includes('--disable-gpu') && !headed.includes('--headless=new'));
 });
 
 test('readDevToolsPort parses the port the browser wrote and rejects garbage', () => {
