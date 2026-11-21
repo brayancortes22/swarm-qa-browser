@@ -59,14 +59,8 @@ describe('swarm-bus security & lifecycle', () => {
 
     const tmp = makeTempRegistry();
     try {
-      await assert.rejects(
-        () => startSwarmBus({ port: 0, host: '0.0.0.0', registryPath: tmp.registryPath }),
-        /loopback/i
-      );
-      await assert.rejects(
-        () => startSwarmBus({ port: 0, host: '192.168.1.50', registryPath: tmp.registryPath }),
-        /loopback/i
-      );
+      await assert.rejects(() => startSwarmBus({ port: 0, host: '0.0.0.0', registryPath: tmp.registryPath }), /loopback/i);
+      await assert.rejects(() => startSwarmBus({ port: 0, host: '192.168.1.50', registryPath: tmp.registryPath }), /loopback/i);
     } finally {
       tmp.cleanup();
     }
@@ -111,9 +105,20 @@ describe('swarm-bus security & lifecycle', () => {
       });
       assert.equal(pairLocalWeb.status, 403);
 
+      const extOrigin = `chrome-extension://${DEFAULT_EXTENSION_ID}`;
+      // Correct Origin alone is not enough: any local process can spoof it, so the pairing code is mandatory.
+      const pairNoCode = await fetch(`${bus.url}/pair`, { method: 'POST', headers: { origin: extOrigin } });
+      assert.equal(pairNoCode.status, 401);
+      assert.equal((await pairNoCode.json()).token, undefined);
+      const pairWrong = await fetch(`${bus.url}/pair`, {
+        method: 'POST',
+        headers: { origin: extOrigin, 'x-swarm-pair-code': 'AAAA-AAAA' }
+      });
+      assert.equal(pairWrong.status, 401);
+
       const pairExt = await fetch(`${bus.url}/pair`, {
         method: 'POST',
-        headers: { origin: `chrome-extension://${DEFAULT_EXTENSION_ID}` }
+        headers: { origin: extOrigin, 'x-swarm-pair-code': bus.pairingCode.toLowerCase().replace('-', ' ') }
       });
       assert.equal(pairExt.status, 200);
       const paired = await pairExt.json();
@@ -135,11 +140,13 @@ describe('swarm-bus security & lifecycle', () => {
         const sock = netConnect({ host: '127.0.0.1', port: bus.port }, () => {
           sock.write(
             'GET //[::1 HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
-            'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n'
+              'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n'
           );
         });
         let data = '';
-        sock.on('data', (chunk) => { data += chunk.toString('utf8'); });
+        sock.on('data', (chunk) => {
+          data += chunk.toString('utf8');
+        });
         sock.on('end', () => resolve(data));
         sock.on('error', reject);
       });
@@ -188,10 +195,7 @@ describe('swarm-bus security & lifecycle', () => {
       await new Promise((resolve) => blocker.listen(0, '127.0.0.1', resolve));
       const busyPort = blocker.address().port;
 
-      await assert.rejects(
-        () => startSwarmBus({ port: busyPort, registryPath: tmp.registryPath, autoFallbackPort: false }),
-        /EADDRINUSE/i
-      );
+      await assert.rejects(() => startSwarmBus({ port: busyPort, registryPath: tmp.registryPath, autoFallbackPort: false }), /EADDRINUSE/i);
 
       bus = await startSwarmBus({ port: busyPort, registryPath: tmp.registryPath, autoFallbackPort: true });
       assert.notEqual(bus.port, busyPort);
@@ -200,10 +204,7 @@ describe('swarm-bus security & lifecycle', () => {
       assert.equal(reg.port, bus.port);
       assert.equal(reg.token, bus.token);
 
-      await assert.rejects(
-        () => startSwarmBus({ port: 0, registryPath: tmp.registryPath }),
-        /already held by live PID/i
-      );
+      await assert.rejects(() => startSwarmBus({ port: 0, registryPath: tmp.registryPath }), /already held by live PID/i);
 
       await bus.close();
       assert.equal(readBusRegistry(tmp.registryPath), null);
@@ -249,13 +250,15 @@ describe('swarm-bus security & lifecycle', () => {
       });
 
       const waitHello = bus.waitForEvent(0, 2000);
-      ws1.send(JSON.stringify({
-        type: 'hello',
-        tabId: 101,
-        url: 'http://localhost:5173/player',
-        title: 'Sonora\x00Player',
-        viewport: { width: 1440, height: 900 }
-      }));
+      ws1.send(
+        JSON.stringify({
+          type: 'hello',
+          tabId: 101,
+          url: 'http://localhost:5173/player',
+          title: 'Sonora\x00Player',
+          viewport: { width: 1440, height: 900 }
+        })
+      );
       const helloEv = await waitHello;
       assert.equal(helloEv.timedOut, false);
       assert.equal(helloEv.events[0].type, 'tab_hello');
@@ -289,15 +292,17 @@ describe('swarm-bus security & lifecycle', () => {
       // Sanitized finding_event cannot overwrite seq/ts/type/untrustedPageData + waitForEvent wakeup
       const seqPreFinding = (await rpc(bus, 'session.status')).body.result.seq;
       const waitFinding = bus.waitForEvent(seqPreFinding, 2000);
-      ws1.send(JSON.stringify({
-        type: 'finding_event',
-        tabId: 101,
-        seq: 999,
-        ts: 'fake',
-        untrustedPageData: false,
-        selector: '.btn\x00',
-        details: JSON.parse('{"__proto__":{"polluted":true},"note":"bad\\u0007text"}')
-      }));
+      ws1.send(
+        JSON.stringify({
+          type: 'finding_event',
+          tabId: 101,
+          seq: 999,
+          ts: 'fake',
+          untrustedPageData: false,
+          selector: '.btn\x00',
+          details: JSON.parse('{"__proto__":{"polluted":true},"note":"bad\\u0007text"}')
+        })
+      );
       const findingEv = (await waitFinding).events.at(-1);
       assert.equal(findingEv.type, 'finding_event');
       assert.equal(findingEv.seq, seqPreFinding + 1);
@@ -345,12 +350,14 @@ describe('swarm-bus security & lifecycle', () => {
       const statusBefore = await rpc(bus, 'session.status');
       const seqBefore = statusBefore.body.result.seq;
       const awaitPromise = rpc(bus, 'events.await', { sinceSeq: seqBefore, timeoutMs: 2000 });
-      ws1.send(JSON.stringify({
-        type: 'route_changed',
-        tabId: 101,
-        url: 'http://localhost:5173/album/9',
-        pathname: '/album/9'
-      }));
+      ws1.send(
+        JSON.stringify({
+          type: 'route_changed',
+          tabId: 101,
+          url: 'http://localhost:5173/album/9',
+          pathname: '/album/9'
+        })
+      );
       const awaited = await awaitPromise;
       assert.equal(awaited.status, 200);
       assert.equal(awaited.body.result.timedOut, false);
@@ -432,11 +439,11 @@ describe('swarm-bus security & lifecycle', () => {
 
   it('starts via cli-bus.mjs without leaking full token and serves /health', async () => {
     const tmp = makeTempRegistry('swarm-cli-test-');
-    const child = spawn(
-      process.execPath,
-      ['packages/core/src/cli-bus.mjs', '--port', '0', '--registry', tmp.registryPath],
-      { cwd: process.cwd(), env: { ...process.env, SWARM_REGISTRY_PATH: tmp.registryPath }, stdio: ['ignore', 'pipe', 'pipe'] }
-    );
+    const child = spawn(process.execPath, ['packages/core/src/cli-bus.mjs', '--port', '0', '--registry', tmp.registryPath], {
+      cwd: process.cwd(),
+      env: { ...process.env, SWARM_REGISTRY_PATH: tmp.registryPath },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
     try {
       const stdoutLine = await new Promise((resolve, reject) => {
         let buf = '';
@@ -470,6 +477,132 @@ describe('swarm-bus security & lifecycle', () => {
     } finally {
       child.kill();
       await new Promise((resolve) => child.once('exit', resolve));
+      tmp.cleanup();
+    }
+  });
+});
+
+describe('swarm-bus hardening & realtime', () => {
+  it('rate-limits pairing guesses, persists the pairing code, and never accepts the code without the extension Origin', async () => {
+    const tmp = makeTempRegistry();
+    const bus = await startSwarmBus({ port: 0, registryPath: tmp.registryPath });
+    try {
+      assert.match(bus.pairingCode, /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
+      const origin = `chrome-extension://${DEFAULT_EXTENSION_ID}`;
+      const noOrigin = await fetch(`${bus.url}/pair`, { method: 'POST', headers: { 'x-swarm-pair-code': bus.pairingCode } });
+      assert.equal(noOrigin.status, 403);
+      for (let i = 0; i < 5; i += 1) {
+        const bad = await fetch(`${bus.url}/pair`, { method: 'POST', headers: { origin, 'x-swarm-pair-code': 'ZZZZ-ZZZZ' } });
+        assert.equal(bad.status, 401);
+      }
+      const locked = await fetch(`${bus.url}/pair`, { method: 'POST', headers: { origin, 'x-swarm-pair-code': bus.pairingCode } });
+      assert.equal(locked.status, 429);
+      assert.equal((await locked.json()).token, undefined);
+    } finally {
+      await bus.close();
+    }
+    const again = await startSwarmBus({ port: 0, registryPath: tmp.registryPath });
+    try {
+      assert.equal(again.pairingCode, bus.pairingCode);
+      assert.notEqual(again.token, bus.token);
+    } finally {
+      await again.close();
+      tmp.cleanup();
+    }
+  });
+
+  it('drops a tab on tab_closed, enforces read-only roles and patch locks, ingests audit reports, and streams events over SSE', async () => {
+    const tmp = makeTempRegistry();
+    const bus = await startSwarmBus({ port: 0, registryPath: tmp.registryPath });
+    const { ws } = await connectWs(`${bus.wsUrl}/?token=${bus.token}`);
+    const commands = [];
+    ws.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type !== 'command') return;
+      commands.push(msg.command);
+      ws.send(JSON.stringify({ type: 'command_result', commandId: msg.commandId, ok: true, result: { action: msg.command.action } }));
+    });
+    try {
+      for (const tabId of [1, 2]) ws.send(JSON.stringify({ type: 'hello', tabId, url: `http://localhost/t${tabId}` }));
+      await bus.waitForEvent(1, 1000);
+
+      // SSE stream replays the backlog and then pushes live events.
+      const sseDenied = await fetch(`${bus.url}/events`);
+      assert.equal(sseDenied.status, 401);
+      const sse = await fetch(`${bus.url}/events?since=0`, { headers: { 'x-swarm-token': bus.token } });
+      assert.equal(sse.status, 200);
+      assert.match(sse.headers.get('content-type'), /text\/event-stream/);
+      const reader = sse.body.getReader();
+      let streamed = '';
+      const readUntil = async (needle) => {
+        while (!streamed.includes(needle)) streamed += new TextDecoder().decode((await reader.read()).value);
+      };
+      await readUntil('tab_hello');
+
+      // tab_closed removes only that tab while the socket (and the other tab) stay alive.
+      ws.send(JSON.stringify({ type: 'tab_closed', tabId: 1 }));
+      await readUntil('"type":"tab_closed"');
+      const status = (await rpc(bus, 'session.status')).body.result;
+      assert.deepEqual(
+        status.tabs.map((t) => t.tabId),
+        [2]
+      );
+      assert.equal(status.selectedTabId, 2);
+      assert.equal(status.pairingCode, bus.pairingCode);
+
+      // Hot patches mutate the page: they need the lock, and read-only roles can never mutate.
+      const unlocked = await rpc(bus, 'tab.command', {
+        tabId: 2,
+        agentId: 'dev-1',
+        command: { action: 'apply_patch', patch: { id: 'p1' } }
+      });
+      assert.equal(unlocked.status, 409);
+      await rpc(bus, 'lock.acquire', { agentId: 'layout', tabId: 2 });
+      const readOnly = await rpc(bus, 'tab.command', { tabId: 2, agentId: 'layout', command: { action: 'click', x: 1, y: 1 } });
+      assert.equal(readOnly.status, 403);
+      assert.equal(readOnly.body.code, 'ROLE_READ_ONLY');
+      await rpc(bus, 'lock.release', { agentId: 'layout', tabId: 2 });
+      await rpc(bus, 'lock.acquire', { agentId: 'dev-1', tabId: 2 });
+      const patched = await rpc(bus, 'tab.command', {
+        tabId: 2,
+        agentId: 'dev-1',
+        command: { action: 'apply_patch', patch: { id: 'p1' } }
+      });
+      assert.equal(patched.status, 200);
+
+      // tickets.ingest de-duplicates against tickets that are still open.
+      const findings = [
+        { ruleId: 'a11y-form-label', severity: 'P2', category: 'a11y', selector: '#email', description: 'Form input missing label' },
+        { ruleId: 'a11y-form-label', severity: 'P2', category: 'a11y', selector: '#email', description: 'Form input missing label' }
+      ];
+      const first = (await rpc(bus, 'tickets.ingest', { tabId: 2, findings })).body.result;
+      assert.equal(first.created.length, 1);
+      assert.equal(first.findingsCount, 2);
+      assert.equal((await rpc(bus, 'tickets.ingest', { tabId: 2, findings })).body.result.created.length, 0);
+
+      // An overlay-originated audit_report becomes tickets and pushes pins back to the tab.
+      ws.send(
+        JSON.stringify({
+          type: 'finding_event',
+          tabId: 2,
+          eventType: 'overlay_action',
+          payload: {
+            type: 'audit_report',
+            pathname: '/t2',
+            findings: [...findings, { ruleId: 'media-broken-image', severity: 'P2', selector: '#cover', description: 'Broken image' }]
+          }
+        })
+      );
+      await readUntil('"type":"audit_report"');
+      assert.equal(bus.store.list({ tabId: 2 }).length, 2);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const pinPush = commands.find((c) => c.action === 'set_tickets');
+      assert.equal(pinPush.tickets.length, 2);
+      assert.equal(pinPush.summary.open, 2);
+      await reader.cancel();
+    } finally {
+      ws.close();
+      await bus.close();
       tmp.cleanup();
     }
   });

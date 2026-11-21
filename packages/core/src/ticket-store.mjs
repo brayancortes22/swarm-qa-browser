@@ -1,10 +1,18 @@
 const MAX_FIX_ROUNDS = 3;
+const MAX_INGEST = 200;
 const REDACTED_TAG = '[redacted]';
 const ANSI_CSI_RE = /(?:\u001b\[|\u009b)[0-9;?]*[ -/]*[@-~]/g;
 const STRIP_CHARS_RE = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
 const TEXT_DEFAULTS = {
-  url: '', selector: '', ruleId: '', severity: 'medium',
-  category: 'general', description: '', expected: '', actual: '', reportedBy: 'qa-agent'
+  url: '',
+  selector: '',
+  ruleId: '',
+  severity: 'medium',
+  category: 'general',
+  description: '',
+  expected: '',
+  actual: '',
+  reportedBy: 'qa-agent'
 };
 
 /**
@@ -22,6 +30,27 @@ export function sanitizePageText(value, maxLen = 280) {
   return cleaned.slice(0, maxLen);
 }
 
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * Deep-sanitizes untrusted JSON (bounded depth and array length, no prototype keys).
+ */
+export function sanitizeData(value, depth = 0, maxDepth = 3) {
+  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value ?? null;
+  if (typeof value === 'string') return sanitizePageText(value);
+  if (depth >= maxDepth) return null;
+  if (Array.isArray(value)) return value.slice(0, 50).map((item) => sanitizeData(item, depth + 1, maxDepth));
+  if (typeof value !== 'object') return sanitizePageText(value);
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (!FORBIDDEN_KEYS.has(key)) out[sanitizePageText(key, 64)] = sanitizeData(item, depth + 1, maxDepth);
+  }
+  return out;
+}
+
+/** Identity of a finding for de-duplication: same rule on the same element with the same message. */
+export const findingKey = (finding) => `${finding?.ruleId || ''}::${finding?.selector || ''}::${finding?.description || ''}`;
+
 function sanitizeEvidence(value) {
   if (value === null || value === undefined) return null;
   if (typeof value === 'number' || typeof value === 'boolean') return value;
@@ -37,7 +66,11 @@ function sanitizeEvidence(value) {
 }
 
 function derivePathname(url) {
-  try { return url ? new URL(String(url)).pathname : ''; } catch { return ''; }
+  try {
+    return url ? new URL(String(url)).pathname : '';
+  } catch {
+    return '';
+  }
 }
 
 function normalizeRect(rect) {
@@ -60,13 +93,25 @@ export class TicketStore {
   create(input = {}) {
     const now = new Date().toISOString();
     const id = `T-${this.#nextId++}`;
-    const vp = input.viewport && typeof input.viewport === 'object'
-      ? { width: Number(input.viewport.width) || 0, height: Number(input.viewport.height) || 0 }
-      : null;
+    const vp =
+      input.viewport && typeof input.viewport === 'object'
+        ? { width: Number(input.viewport.width) || 0, height: Number(input.viewport.height) || 0 }
+        : null;
     const ticket = {
-      id, tabId: input.tabId ?? null, pathname: sanitizePageText(input.pathname ?? derivePathname(input.url)),
-      viewport: vp, rect: normalizeRect(input.rect), round: 1, status: 'open', untrustedPageData: true,
-      claimedBy: null, fixSummary: null, verifiedBy: null, evidence: null, createdAt: now, updatedAt: now
+      id,
+      tabId: input.tabId ?? null,
+      pathname: sanitizePageText(input.pathname ?? derivePathname(input.url)),
+      viewport: vp,
+      rect: normalizeRect(input.rect),
+      round: 1,
+      status: 'open',
+      untrustedPageData: true,
+      claimedBy: null,
+      fixSummary: null,
+      verifiedBy: null,
+      evidence: null,
+      createdAt: now,
+      updatedAt: now
     };
     for (const [field, fallback] of Object.entries(TEXT_DEFAULTS)) {
       ticket[field] = sanitizePageText(input[field] ?? fallback);
@@ -109,7 +154,7 @@ export class TicketStore {
 
   markFixed(ticketIds, { devAgentId, summary } = {}) {
     const tickets = this.#resolveAll(ticketIds);
-    const agent = typeof devAgentId === 'string' ? (sanitizePageText(devAgentId) || null) : null;
+    const agent = typeof devAgentId === 'string' ? sanitizePageText(devAgentId) || null : null;
     for (const t of tickets) {
       if (t.status === 'escalated') throw new Error(`Ticket ${t.id} is escalated and cannot be marked fixed`);
       if (t.status === 'claimed') {
@@ -142,9 +187,41 @@ export class TicketStore {
       t.status = 'verified';
     } else {
       t.claimedBy = null;
-      if (t.round < MAX_FIX_ROUNDS) { t.round += 1; t.status = 'reopened'; } else { t.status = 'escalated'; }
+      if (t.round < MAX_FIX_ROUNDS) {
+        t.round += 1;
+        t.status = 'reopened';
+      } else {
+        t.status = 'escalated';
+      }
     }
     return structuredClone(t);
+  }
+
+  /**
+   * Creates tickets for findings not already tracked (open or in progress) on the same
+   * tab + pathname + viewport width. Returns only the newly created tickets.
+   */
+  ingest({ findings = [], tabId = null, url = '', pathname, viewport = null, reportedBy } = {}) {
+    const path = sanitizePageText(pathname ?? derivePathname(url));
+    const scope = { tabId, pathname: path, ...(viewport?.width ? { viewportWidth: viewport.width } : {}) };
+    const seen = new Set(
+      this.list(scope)
+        .filter((t) => t.status !== 'verified')
+        .map(findingKey)
+    );
+    const created = [];
+    for (const raw of Array.isArray(findings) ? findings.slice(0, MAX_INGEST) : []) {
+      if (!raw || typeof raw !== 'object') continue;
+      const key = findingKey({
+        ruleId: sanitizePageText(raw.ruleId),
+        selector: sanitizePageText(raw.selector),
+        description: sanitizePageText(raw.description)
+      });
+      if (seen.has(key)) continue;
+      seen.add(key);
+      created.push(this.create({ ...raw, tabId, url, pathname: path, viewport, reportedBy: reportedBy || raw.category || 'qa-auditor' }));
+    }
+    return created;
   }
 
   #resolveAll(ticketIds) {

@@ -42,7 +42,10 @@ export const DEFAULT_ROLES = Object.freeze({
 });
 
 function normalizeKey(raw) {
-  return String(raw).trim().toLowerCase().replace(/[\s_]+/g, '-');
+  return String(raw)
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, '-');
 }
 
 function pickFallbackColor(id) {
@@ -81,9 +84,7 @@ export function resolveRole(roleOrAgent) {
   }
 
   if (roleOrAgent && typeof roleOrAgent === 'object') {
-    const base =
-      matchDefaultRole(roleOrAgent.role ?? roleOrAgent.roleId) ??
-      matchDefaultRole(roleOrAgent.id);
+    const base = matchDefaultRole(roleOrAgent.role ?? roleOrAgent.roleId) ?? matchDefaultRole(roleOrAgent.id);
     const id = base?.id ?? (normalizeKey(roleOrAgent.role ?? roleOrAgent.id ?? 'qa-observer') || 'qa-observer');
     return {
       id,
