@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { get as httpGet } from 'node:http';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { join, posix, win32 } from 'node:path';
 import WebSocket from 'ws';
 import { connectCdpBridge } from './cdp-bridge.mjs';
 
@@ -20,7 +20,7 @@ export function browserCandidates(platform = process.platform, env = process.env
       'BraveSoftware\\Brave-Browser\\Application\\brave.exe',
       'Chromium\\Application\\chrome.exe'
     ];
-    return apps.flatMap((app) => roots.map((root) => join(root, app)));
+    return apps.flatMap((app) => roots.map((root) => win32.join(root, app)));
   }
   if (platform === 'darwin') {
     return ['Google Chrome', 'Microsoft Edge', 'Brave Browser', 'Chromium'].map(
@@ -29,9 +29,9 @@ export function browserCandidates(platform = process.platform, env = process.env
   }
   const names = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'microsoft-edge', 'brave-browser'];
   const dirs = String(env.PATH || '')
-    .split(delimiter)
+    .split(posix.delimiter)
     .filter(Boolean);
-  return names.flatMap((name) => dirs.map((dir) => join(dir, name)));
+  return names.flatMap((name) => dirs.map((dir) => posix.join(dir, name)));
 }
 
 /** Finds a Chromium-based browser: explicit path, then SWARM_BROWSER_PATH / CHROME_PATH, then known locations. */
