@@ -88,7 +88,8 @@ export async function startSwarmBus({
   registryPath,
   pairingPath,
   extensionId = DEFAULT_EXTENSION_ID,
-  autoFallbackPort = true
+  autoFallbackPort = true,
+  requirePairingCode = process.env.SWARM_REQUIRE_PAIR_CODE === '1'
 } = {}) {
   if (typeof host !== 'string' || !isLoopbackHost(host)) throw new Error(`Refusing non-loopback host "${host}"`);
   const bindHost = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
@@ -109,6 +110,7 @@ export async function startSwarmBus({
   const waiters = new Set();
   const pending = new Map();
   const eventStreams = new Set();
+  const browsers = new Set();
   let seq = 0;
   let selectedTabId = null;
   let boundPort = requestedPort;
@@ -179,6 +181,24 @@ export async function startSwarmBus({
     });
   }
 
+  /** Sends a browser-level command (list, open or attach tabs) to a connected extension. */
+  function dispatchToBrowser(command, timeoutMs = 30_000) {
+    const target = [...browsers].find((socket) => socket.readyState === WS_OPEN);
+    if (!target) return Promise.reject(httpError('No browser extension is connected to the bus', 404, 'BROWSER_NOT_CONNECTED'));
+    const commandId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => {
+          pending.delete(commandId);
+          reject(httpError('Browser command timed out', 504, 'TIMEOUT'));
+        },
+        Math.max(1, Number(timeoutMs) || 30_000)
+      );
+      pending.set(commandId, { tabId: null, ws: target, resolve, reject, timer });
+      target.send(JSON.stringify({ type: 'browser_command', commandId, command }));
+    });
+  }
+
   function removeTab(tabId) {
     if (!tabs.delete(tabId)) return;
     rejectPending(
@@ -239,6 +259,8 @@ export async function startSwarmBus({
       host: bindHost,
       extensionId,
       pairingCode,
+      requirePairingCode,
+      browserConnected: browsers.size > 0,
       seq,
       selectedTabId,
       tabs: Array.from(tabs.values(), publicTab),
@@ -295,6 +317,7 @@ export async function startSwarmBus({
       if (p.requireLock || MUTATING_ACTIONS.has(action)) assertCanMutate(p.agentId, tabId);
       return dispatchToTab(tabId, command, p.timeoutMs);
     },
+    'browser.command': (p) => dispatchToBrowser(p.command ?? p, p.timeoutMs),
     'events.await': (p) => waitForEvent(p.sinceSeq ?? 0, p.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS)
   };
 
@@ -303,7 +326,8 @@ export async function startSwarmBus({
   function handlePair(req, res, origin) {
     if (pairLimiter.blocked())
       return sendJson(res, 429, { ok: false, error: 'Too many pairing attempts; wait a minute', code: 'PAIR_RATE_LIMITED' }, origin, true);
-    if (!safeEqual(normalizePairingCode(req.headers['x-swarm-pair-code']), pairingCode)) {
+    // Default: the extension pairs automatically. Opt-in strict mode (SWARM_REQUIRE_PAIR_CODE=1) also demands the code.
+    if (requirePairingCode && !safeEqual(normalizePairingCode(req.headers['x-swarm-pair-code']), pairingCode)) {
       pairLimiter.fail();
       return sendJson(res, 401, { ok: false, error: 'Invalid pairing code', code: 'PAIR_CODE_INVALID' }, origin, true);
     }
@@ -422,6 +446,14 @@ export async function startSwarmBus({
         if (tabs.get(msg.tabId)?.ws === ws) removeTab(msg.tabId);
         return;
       }
+      if (msg.type === 'extension_hello') {
+        // A browser extension that can open and attach tabs on request (see `browser.command`).
+        if (!browsers.has(ws)) {
+          browsers.add(ws);
+          pushEvent('browser_connected', { browsers: browsers.size });
+        }
+        return;
+      }
       if (msg.type !== 'hello' && msg.type !== 'route_changed' && msg.type !== 'route_change') return;
 
       const source = msg.tab && typeof msg.tab === 'object' ? msg.tab : msg;
@@ -447,6 +479,7 @@ export async function startSwarmBus({
         (entry) => `Tab ${entry.tabId} disconnected`
       );
       for (const [tabId, tab] of [...tabs.entries()]) if (tab.ws === ws) removeTab(tabId);
+      if (browsers.delete(ws)) pushEvent('browser_disconnected', { browsers: browsers.size });
     });
   });
 

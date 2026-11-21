@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const ENABLE_TEXT = 'Habilitar permisos y arrancar enjambre';
+const ENABLE_TEXT = 'Arrancar enjambre en esta pestaña';
 const ACTIVE_TEXT = 'Sesión activa en esta pestaña';
 const els = {
   busDot: $('busDot'),
@@ -11,7 +11,6 @@ const els = {
   tabUrl: $('tabUrl'),
   tabViewport: $('tabViewport'),
   probeCheck: $('probeCheck'),
-  consentCheck: $('consentCheck'),
   enableBtn: $('enableBtn'),
   detachBtn: $('detachBtn'),
   exportBtn: $('exportBtn'),
@@ -56,8 +55,7 @@ function renderTab(tabInfo, sessionTab) {
   } else {
     els.tabViewport.textContent = sessionActive ? 'Activo' : 'Sin sesión';
   }
-  if (sessionActive) els.consentCheck.checked = true;
-  els.enableBtn.disabled = sessionActive || !target || !els.consentCheck.checked;
+  els.enableBtn.disabled = sessionActive || !target;
   els.enableBtn.textContent = sessionActive ? ACTIVE_TEXT : ENABLE_TEXT;
   els.detachBtn.disabled = !sessionActive;
   els.exportBtn.disabled = !sessionActive;
@@ -76,11 +74,6 @@ async function refreshStatus() {
     renderTab(activeTab, null);
   }
 }
-
-els.consentCheck.addEventListener('change', () => {
-  const target = parseTarget(activeTab?.url);
-  els.enableBtn.disabled = sessionActive || !target || !els.consentCheck.checked;
-});
 
 els.savePortBtn.addEventListener('click', async () => {
   const port = Number(els.portInput.value);
@@ -117,21 +110,10 @@ els.savePairBtn.addEventListener('click', async () => {
 });
 
 els.enableBtn.addEventListener('click', async () => {
-  if (!els.consentCheck.checked) {
-    setFeedback('Debes aceptar el consentimiento explícito antes de depurar.', 'err');
-    return;
-  }
   const target = parseTarget(activeTab?.url);
   if (!activeTab?.id || !target) {
     setFeedback('Abre una pestaña http:// o https:// válida para iniciar QA.', 'err');
     return;
-  }
-  if (!target.isLocal) {
-    const granted = await chrome.permissions.request({ origins: [target.originPattern] });
-    if (!granted) {
-      setFeedback(`Permiso denegado para ${target.originPattern}.`, 'err');
-      return;
-    }
   }
   els.enableBtn.disabled = true;
   els.enableBtn.textContent = 'Activando sesión...';
@@ -160,14 +142,9 @@ els.enableBtn.addEventListener('click', async () => {
 
 els.detachBtn.addEventListener('click', async () => {
   if (!activeTab?.id) return;
-  const target = parseTarget(activeTab.url);
   const res = await chrome.runtime.sendMessage({ type: 'detach_tab', tabId: activeTab.id });
-  if (target && !target.isLocal) {
-    await chrome.permissions.remove({ origins: [target.originPattern] }).catch(() => false);
-  }
-  els.consentCheck.checked = false;
   await refreshStatus();
-  setFeedback(res?.ok ? 'Depuración detenida y permisos revocados.' : res?.error || 'Error al desconectar.', res?.ok ? 'ok' : 'err');
+  setFeedback(res?.ok ? 'Enjambre detenido en esta pestaña.' : res?.error || 'Error al desconectar.', res?.ok ? 'ok' : 'err');
 });
 
 els.exportBtn.addEventListener('click', async () => {

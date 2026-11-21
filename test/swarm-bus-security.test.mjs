@@ -70,7 +70,7 @@ describe('swarm-bus security & lifecycle', () => {
     const tmp = makeTempRegistry();
     let bus;
     try {
-      bus = await startSwarmBus({ port: 0, registryPath: tmp.registryPath });
+      bus = await startSwarmBus({ requirePairingCode: true, port: 0, registryPath: tmp.registryPath });
 
       // /health allows local/empty origin without leaking token, blocks evil origin
       const healthOk = await fetch(`${bus.url}/health`);
@@ -483,9 +483,9 @@ describe('swarm-bus security & lifecycle', () => {
 });
 
 describe('swarm-bus hardening & realtime', () => {
-  it('rate-limits pairing guesses, persists the pairing code, and never accepts the code without the extension Origin', async () => {
+  it('strict mode: rate-limits pairing guesses, persists the pairing code, and never accepts the code without the extension Origin', async () => {
     const tmp = makeTempRegistry();
-    const bus = await startSwarmBus({ port: 0, registryPath: tmp.registryPath });
+    const bus = await startSwarmBus({ requirePairingCode: true, port: 0, registryPath: tmp.registryPath });
     try {
       assert.match(bus.pairingCode, /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
       const origin = `chrome-extension://${DEFAULT_EXTENSION_ID}`;
@@ -602,6 +602,54 @@ describe('swarm-bus hardening & realtime', () => {
       await reader.cancel();
     } finally {
       ws.close();
+      await bus.close();
+      tmp.cleanup();
+    }
+  });
+});
+
+describe('swarm-bus automatic mode', () => {
+  it('pairs the extension without a code by default, still refuses other origins, and relays browser commands', async () => {
+    const tmp = makeTempRegistry();
+    const bus = await startSwarmBus({ port: 0, registryPath: tmp.registryPath });
+    try {
+      const origin = `chrome-extension://${DEFAULT_EXTENSION_ID}`;
+      const paired = await fetch(`${bus.url}/pair`, { method: 'POST', headers: { origin } });
+      assert.equal(paired.status, 200);
+      assert.equal((await paired.json()).token, bus.token);
+      assert.equal((await fetch(`${bus.url}/pair`, { method: 'POST', headers: { origin: 'https://evil.example' } })).status, 403);
+      assert.equal((await fetch(`${bus.url}/pair`, { method: 'POST' })).status, 403);
+
+      const noBrowser = await rpc(bus, 'browser.command', { command: { action: 'list_tabs' } });
+      assert.deepEqual([noBrowser.status, noBrowser.body.code], [404, 'BROWSER_NOT_CONNECTED']);
+      assert.equal((await rpc(bus, 'session.status')).body.result.browserConnected, false);
+
+      const { ws } = await connectWs(`${bus.wsUrl}/?token=${bus.token}`, { origin });
+      ws.on('message', (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type !== 'browser_command') return;
+        const ok = msg.command.action === 'open_tab';
+        ws.send(
+          JSON.stringify({
+            type: 'command_result',
+            commandId: msg.commandId,
+            ok,
+            ...(ok ? { result: { tabId: 7, url: msg.command.url } } : { error: 'nope' })
+          })
+        );
+      });
+      ws.send(JSON.stringify({ type: 'extension_hello' }));
+      await bus.waitForEvent(0, 1000);
+      const status = (await rpc(bus, 'session.status')).body.result;
+      assert.deepEqual([status.browserConnected, status.requirePairingCode], [true, false]);
+      const opened = await rpc(bus, 'browser.command', { command: { action: 'open_tab', url: 'https://example.com/' } });
+      assert.deepEqual(opened.body.result, { tabId: 7, url: 'https://example.com/' });
+      assert.equal((await rpc(bus, 'browser.command', { command: { action: 'boom' } })).body.error, 'nope');
+
+      ws.close();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      assert.equal((await rpc(bus, 'session.status')).body.result.browserConnected, false);
+    } finally {
       await bus.close();
       tmp.cleanup();
     }
