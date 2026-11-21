@@ -52,7 +52,10 @@ function sanitizeDetail(raw) {
   for (const [k, v] of Object.entries(raw)) {
     if (FORBIDDEN_KEYS.has(k)) continue;
     if (typeof v === 'string') {
-      out[k] = v.replace(/[\r\n\t]+/g, ' ').replace(CTRL_RE, '').slice(0, 280);
+      out[k] = v
+        .replace(/[\r\n\t]+/g, ' ')
+        .replace(CTRL_RE, '')
+        .slice(0, 280);
     } else if (typeof v === 'number' || typeof v === 'boolean') {
       out[k] = v;
     }
@@ -64,12 +67,8 @@ function sanitizeDetail(raw) {
  * Listens in the ISOLATED world for nonce-scoped probe events and stores sanitized entries.
  */
 export function createConsoleCollector(optionsOrNonce = {}) {
-  const opts = typeof optionsOrNonce === 'string' ? { nonce: optionsOrNonce } : (optionsOrNonce || {});
-  const {
-    targetWindow = typeof window !== 'undefined' ? window : undefined,
-    nonce = '',
-    maxEntries = 50
-  } = opts;
+  const opts = typeof optionsOrNonce === 'string' ? { nonce: optionsOrNonce } : optionsOrNonce || {};
+  const { targetWindow = typeof window !== 'undefined' ? window : undefined, nonce = '', maxEntries = 50 } = opts;
 
   const limit = Math.max(1, Number(maxEntries) || 50);
   const eventName = `__swarm_qa_probe_${String(nonce ?? '')}`;
@@ -84,7 +83,9 @@ export function createConsoleCollector(optionsOrNonce = {}) {
 
   return {
     getEntries: () => entries.slice(),
-    clear: () => { entries.length = 0; },
+    clear: () => {
+      entries.length = 0;
+    },
     destroy: () => {
       targetWindow?.removeEventListener?.(eventName, onProbe);
       entries.length = 0;

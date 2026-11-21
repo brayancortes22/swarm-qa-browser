@@ -1,5 +1,7 @@
 # Swarm QA Browser Implementation Plan
 
+> **Historical document (v0.1).** This plan was completed for the first version. Current status and next steps live in [PLAN.md](../../../PLAN.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build `swarm-qa-browser` as an independent Node.js ESM + Chrome MV3 Extension + MCP + CDP multi-cursor QA and closed-loop Dev verification system, and verify it live against `sonora-music-player`.

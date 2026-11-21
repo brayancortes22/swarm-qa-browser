@@ -8,14 +8,7 @@ const PROBE_PATH = join(__dirname, 'win-probe.ps1');
 export function scanDesktopWindows() {
   if (process.platform !== 'win32') return [];
   try {
-    const raw = execFileSync('powershell.exe', [
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      PROBE_PATH
-    ], {
+    const raw = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', PROBE_PATH], {
       encoding: 'utf8',
       timeout: 8000,
       windowsHide: true

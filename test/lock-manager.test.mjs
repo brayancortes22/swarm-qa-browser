@@ -37,10 +37,7 @@ describe('LockManager', () => {
     assert.equal(heartbeat.scope, 'viewport');
 
     // Competing agent is blocked with holder and remaining ms
-    assert.throws(
-      () => locks.acquire({ agentId: 'qa-2', tabId: 42 }),
-      /qa-1.*10000\s*ms/i
-    );
+    assert.throws(() => locks.acquire({ agentId: 'qa-2', tabId: 42 }), /qa-1.*10000\s*ms/i);
     assert.throws(() => locks.assertCanMutate({ agentId: 'qa-2', tabId: 42 }), /qa-1/);
     assert.throws(() => locks.release({ agentId: 'qa-2', tabId: 42 }), /qa-1/);
     assert.equal(locks.assertCanMutate({ agentId: 'qa-1', tabId: 42 }).agentId, 'qa-1');
@@ -104,10 +101,7 @@ describe('session-auth', () => {
       assert.equal(readBusRegistry(regPath).token, 'fresh-token');
 
       // Live PID lock cannot be overwritten by acquireRegistryLock
-      assert.throws(
-        () => acquireRegistryLock({ pid: process.pid + 1, port: 47923, token: 'hijack' }, regPath),
-        /already/i
-      );
+      assert.throws(() => acquireRegistryLock({ pid: process.pid + 1, port: 47923, token: 'hijack' }, regPath), /already/i);
 
       // writeBusRegistry updates metadata and clearBusRegistryIfOwned only clears owned PID
       writeBusRegistry({ pid: process.pid, port: 47922, token: 'updated' }, regPath);

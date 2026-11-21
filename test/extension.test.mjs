@@ -1,14 +1,14 @@
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import vm from 'node:vm';
 import WebSocket from 'ws';
+import { createTestDom } from './helpers/test-dom.mjs';
 
 import { startSwarmBus } from '../packages/core/src/swarm-bus.mjs';
-import { DEFAULT_EXTENSION_ID } from '../packages/core/src/session-auth.mjs';
+import { DEFAULT_EXTENSION_ID, getPairingPath, loadOrCreatePairingCode } from '../packages/core/src/session-auth.mjs';
 
 const OVERLAY_BUNDLE = readFileSync(new URL('../packages/extension/overlay.bundle.js', import.meta.url), 'utf8');
 const CONTENT_SRC = readFileSync(new URL('../packages/extension/content.js', import.meta.url), 'utf8');
@@ -27,105 +27,112 @@ async function getFreePort() {
   return port;
 }
 
+const openDoms = new Set();
+
+/** Runs the real overlay bundle + content script inside a jsdom page with a mocked `chrome.runtime`. */
 function makeContentSandbox({ initialUrl = 'http://localhost:5173/player', title = 'Sonora', width = 390, height = 844 } = {}) {
+  const dom = createTestDom({ url: initialUrl, title, width, height });
+  openDoms.add(dom);
   const sent = [];
   let listener = null;
-  const mkNode = (tag, { id = '', attrs = {}, text = '', rect = { x: 10, y: 10, width: 120, height: 48 }, value = '', style = {}, children = [] } = {}) => {
-    let _val = value;
-    const node = {
-      tagName: tag.toUpperCase(), nodeType: 1, id, type: attrs.type ?? '', attrs: { ...attrs },
-      style: { ...style }, children, parentElement: null, dataset: {},
-      classList: { toggle: () => false },
-      get value() { return _val; }, set value(v) { _val = String(v ?? ''); },
-      get textContent() { return text + children.map((c) => c.textContent || '').join(''); },
-      set textContent(v) { text = String(v ?? ''); children.length = 0; },
-      getAttribute(n) { return n === 'id' ? (id || null) : (Object.hasOwn(node.attrs, n) ? node.attrs[n] : null); },
-      setAttribute(k, v) { if (k === 'id') node.id = v; else node.attrs[k] = v; },
-      hasAttribute: (n) => (n === 'id' ? Boolean(id) : Object.hasOwn(node.attrs, n)),
-      contains: (o) => children.some((c) => c === o || c.contains(o)),
-      closest(sel) {
-        const ids = sel.split(',').map((s) => s.trim().replace(/^#/, ''));
-        for (let cur = node; cur; cur = cur.parentElement) if (ids.includes(cur.id)) return cur;
-        return null;
+  dom.win.chrome = {
+    runtime: {
+      sendMessage: (p) => {
+        sent.push(p);
+        return Promise.resolve({ ok: true });
       },
-      appendChild(c) { c.parentElement = node; children.push(c); return c; },
-      addEventListener: () => {}, dispatchEvent: () => true,
-      replaceChildren: () => { children.length = 0; },
-      scrollIntoView: () => {}, focus: () => {},
-      remove() { const p = node.parentElement; if (p) p.children = p.children.filter((c) => c !== node); node.parentElement = null; },
-      attachShadow(o) { node._shadowMode = o.mode; const s = mkNode('shadow'); s.ownerDocument = doc; return s; },
-      getBoundingClientRect: () => ({ left: rect.x, top: rect.y, right: rect.x + rect.width, bottom: rect.y + rect.height, ...rect })
-    };
-    for (const c of children) c.parentElement = node;
-    return node;
+      onMessage: {
+        addListener: (fn) => {
+          listener = fn;
+        }
+      }
+    }
   };
-  const findAll = (root, out = []) => { out.push(root); for (const c of root.children) findAll(c, out); return out; };
-  const btn = mkNode('button', { id: 'play-btn', text: 'Play', rect: { x: 12, y: 12, width: 32, height: 32 } });
-  const note = mkNode('input', { id: 'note', attrs: { type: 'text', placeholder: 'Note' }, value: 'hello' });
-  const pw = mkNode('input', { id: 'pw', attrs: { type: 'password', placeholder: 'PW' }, value: 'oldpw' });
-  const hid = mkNode('input', { id: 'csrf', attrs: { type: 'hidden' }, value: 'tok-1' });
-  const agBtn = mkNode('button', { id: 'ag-btn', text: 'AG' });
-  const agUi = mkNode('div', { id: '__antigravity_native_browser_ui', children: [agBtn] });
-  const body = mkNode('body', { children: [agUi, btn, note, pw, hid], rect: { x: 0, y: 0, width, height } });
-  const html = mkNode('html', { children: [body], rect: { x: 0, y: 0, width, height } });
-  let curUrl = new URL(initialUrl);
-  const winListeners = new Map();
-  const win = {
-    innerWidth: width, innerHeight: height,
-    location: { get href() { return curUrl.href; }, get pathname() { return curUrl.pathname; } },
-    history: { pushState: (_, __, u) => { curUrl = new URL(u, curUrl); }, replaceState: () => {} },
-    addEventListener: (t, fn) => { if (!winListeners.has(t)) winListeners.set(t, new Set()); winListeners.get(t).add(fn); },
-    removeEventListener: (t, fn) => winListeners.get(t)?.delete(fn),
-    dispatchEvent: (ev) => { for (const fn of winListeners.get(ev.type) || []) fn(ev); },
-    getComputedStyle: (n) => ({ display: 'block', visibility: 'visible', opacity: '1', overflowX: 'visible', ...n.style })
-  };
-  const doc = {
-    nodeType: 9, documentElement: html, body, defaultView: win, title,
-    createElement: (t) => mkNode(t),
-    getElementById: (id) => findAll(html).find((n) => n.id === id) || null,
-    querySelector: (sel) => {
-      if (sel.includes('[broken')) throw new SyntaxError('Invalid selector');
-      if (sel.startsWith('#')) return findAll(html).find((n) => n.id === sel.slice(1)) || null;
-      return findAll(html).find((n) => n.tagName.toLowerCase() === sel.toLowerCase()) || null;
-    },
-    querySelectorAll: () => findAll(html)
-  };
-  const sandbox = vm.createContext({
-    document: doc, window: win, location: win.location, URL, Event,
-    CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init?.detail; } },
-    setInterval, clearInterval, Set, Map, Array, Object, String, Number, Boolean, Math, JSON, Date, RegExp, Error,
-    chrome: { runtime: { sendMessage: (p) => { sent.push(p); return Promise.resolve({ ok: true }); }, onMessage: { addListener: (fn) => { listener = fn; } } } }
-  });
-  sandbox.globalThis = sandbox;
-  vm.runInContext(OVERLAY_BUNDLE, sandbox);
-  vm.runInContext(CONTENT_SRC, sandbox);
+  dom.run(OVERLAY_BUNDLE);
+  dom.run(CONTENT_SRC);
   const send = (msg) => {
     let reply;
-    listener(msg, {}, (r) => { reply = r; });
+    listener(msg, {}, (r) => {
+      reply = r;
+    });
     return reply;
   };
-  return { sandbox, doc, win, sent, send, getEl: (id) => doc.getElementById(id), setUrl: (u) => { curUrl = new URL(u); } };
+  return {
+    sandbox: dom.win,
+    doc: dom.doc,
+    win: dom.win,
+    sent,
+    send,
+    run: dom.run,
+    getEl: dom.getEl,
+    setUrl: dom.setUrl,
+    close: () => {
+      send({ type: 'destroy_overlay' });
+      dom.close();
+      openDoms.delete(dom);
+    }
+  };
 }
 
 function makePopupEnv({ tab = { id: 101, url: 'http://localhost:5173/player' }, statusRes, onMessage, onPermReq, onPermRem } = {}) {
-  const ids = ['busDot', 'busText', 'portInput', 'savePortBtn', 'tabUrl', 'tabViewport', 'probeCheck', 'consentCheck', 'enableBtn', 'detachBtn', 'exportBtn', 'feedback'];
-  const elems = Object.fromEntries(ids.map((id) => {
-    const listeners = new Map();
-    const el = {
-      id, textContent: id === 'enableBtn' ? 'Habilitar permisos y arrancar enjambre' : '',
-      className: '', title: '', value: id === 'portInput' ? '47921' : '',
-      checked: id === 'probeCheck', disabled: false,
-      classList: { toggle: (c, f) => { el._toggled = { c, f }; } },
-      addEventListener: (t, fn) => { if (!listeners.has(t)) listeners.set(t, []); listeners.get(t).push(fn); },
-      async trigger(t) { for (const fn of listeners.get(t) || []) await fn(); }
-    };
-    return [id, el];
-  }));
+  const ids = [
+    'busDot',
+    'busText',
+    'portInput',
+    'savePortBtn',
+    'pairInput',
+    'savePairBtn',
+    'tabUrl',
+    'tabViewport',
+    'probeCheck',
+    'consentCheck',
+    'enableBtn',
+    'detachBtn',
+    'exportBtn',
+    'feedback'
+  ];
+  const elems = Object.fromEntries(
+    ids.map((id) => {
+      const listeners = new Map();
+      const el = {
+        id,
+        textContent: id === 'enableBtn' ? 'Arrancar enjambre en esta pestaña' : '',
+        className: '',
+        title: '',
+        value: id === 'portInput' ? '47921' : '',
+        checked: id === 'probeCheck',
+        disabled: false,
+        classList: {
+          toggle: (c, f) => {
+            el._toggled = { c, f };
+          }
+        },
+        addEventListener: (t, fn) => {
+          if (!listeners.has(t)) listeners.set(t, []);
+          listeners.get(t).push(fn);
+        },
+        async trigger(t) {
+          for (const fn of listeners.get(t) || []) await fn();
+        }
+      };
+      return [id, el];
+    })
+  );
   const downloads = [];
   const doc = {
     activeElement: null,
     getElementById: (id) => elems[id] || null,
-    createElement: () => ({ click: () => { downloads.push({ href: doc._last.href, download: doc._last.download }); }, set href(v) { doc._last.href = v; }, set download(v) { doc._last.download = v; } }),
+    createElement: () => ({
+      click: () => {
+        downloads.push({ href: doc._last.href, download: doc._last.download });
+      },
+      set href(v) {
+        doc._last.href = v;
+      },
+      set download(v) {
+        doc._last.download = v;
+      }
+    }),
     _last: {}
   };
   const messages = [];
@@ -147,13 +154,25 @@ function makePopupEnv({ tab = { id: 101, url: 'http://localhost:5173/player' }, 
   return { elems, doc, chromeMock, messages, downloads };
 }
 
-function makeBackgroundEnv({ initialTabs = [], grantedOrigins = [], localStore = {}, sessionStore = {}, failInjectOrigins = [] } = {}) {
+function makeBackgroundEnv({
+  initialTabs = [],
+  grantedOrigins = [],
+  localStore = {},
+  sessionStore = {},
+  failInjectOrigins = [],
+  registryPath
+} = {}) {
+  // The extension must know the bus pairing code (normally typed once into the popup).
+  if (registryPath && !('swarmPairCode' in localStore))
+    localStore = { ...localStore, swarmPairCode: loadOrCreatePairingCode(getPairingPath(registryPath)) };
   const tabs = new Map(initialTabs.map((t) => [t.id, { ...t }]));
   const granted = new Set(grantedOrigins);
   const localData = new Map(Object.entries(localStore));
   const sessionData = new Map(Object.entries(sessionStore));
   const attached = new Set();
-  const cdpCalls = [], detachCalls = [], wsSent = [];
+  const cdpCalls = [],
+    detachCalls = [],
+    wsSent = [];
   const listeners = { dbgEvent: [], dbgDetach: [], tabRemoved: [], tabUpdated: [], runtimeMsg: [] };
   const tabSandboxes = new Map();
 
@@ -161,11 +180,15 @@ function makeBackgroundEnv({ initialTabs = [], grantedOrigins = [], localStore =
     storage: {
       local: {
         get: async (k) => (k in Object.fromEntries(localData) ? { [k]: localData.get(k) } : {}),
-        set: async (obj) => { for (const [k, v] of Object.entries(obj)) localData.set(k, v); }
+        set: async (obj) => {
+          for (const [k, v] of Object.entries(obj)) localData.set(k, v);
+        }
       },
       session: {
         get: async (k) => (sessionData.has(k) ? { [k]: sessionData.get(k) } : {}),
-        set: async (obj) => { for (const [k, v] of Object.entries(obj)) sessionData.set(k, structuredClone(v)); }
+        set: async (obj) => {
+          for (const [k, v] of Object.entries(obj)) sessionData.set(k, structuredClone(v));
+        }
       }
     },
     permissions: {
@@ -194,12 +217,20 @@ function makeBackgroundEnv({ initialTabs = [], grantedOrigins = [], localStore =
       onRemoved: { addListener: (fn) => listeners.tabRemoved.push(fn) },
       onUpdated: {
         addListener: (fn) => listeners.tabUpdated.push(fn),
-        removeListener: (fn) => { const i = listeners.tabUpdated.indexOf(fn); if (i !== -1) listeners.tabUpdated.splice(i, 1); }
+        removeListener: (fn) => {
+          const i = listeners.tabUpdated.indexOf(fn);
+          if (i !== -1) listeners.tabUpdated.splice(i, 1);
+        }
       }
     },
     debugger: {
-      attach: async ({ tabId }) => { attached.add(tabId); },
-      detach: async ({ tabId }) => { detachCalls.push(tabId); attached.delete(tabId); },
+      attach: async ({ tabId }) => {
+        attached.add(tabId);
+      },
+      detach: async ({ tabId }) => {
+        detachCalls.push(tabId);
+        attached.delete(tabId);
+      },
       sendCommand: async ({ tabId }, method, params) => {
         cdpCalls.push({ tabId, method, params });
         if (!attached.has(tabId) && method === 'DOM.enable') throw new Error('Debugger is not attached');
@@ -213,7 +244,7 @@ function makeBackgroundEnv({ initialTabs = [], grantedOrigins = [], localStore =
         }
         if (method === 'Runtime.evaluate' && params?.expression) {
           const sb = tabSandboxes.get(tabId);
-          if (sb) vm.runInContext(params.expression, sb.sandbox);
+          if (sb) sb.run(params.expression);
         }
         return {};
       },
@@ -225,9 +256,10 @@ function makeBackgroundEnv({ initialTabs = [], grantedOrigins = [], localStore =
     }
   };
 
-  const callRuntime = (msg, sender = {}) => new Promise((resolve) => {
-    listeners.runtimeMsg[0](msg, sender, resolve);
-  });
+  const callRuntime = (msg, sender = {}) =>
+    new Promise((resolve) => {
+      listeners.runtimeMsg[0](msg, sender, resolve);
+    });
 
   const orig = { chrome: globalThis.chrome, fetch: globalThis.fetch, WebSocket: globalThis.WebSocket };
   const extOrigin = `chrome-extension://${DEFAULT_EXTENSION_ID}`;
@@ -238,35 +270,62 @@ function makeBackgroundEnv({ initialTabs = [], grantedOrigins = [], localStore =
       if (protocols && typeof protocols !== 'object') super(url, protocols, { headers: { origin: extOrigin } });
       else super(url, { headers: { origin: extOrigin } });
     }
-    send(data) { wsSent.push(JSON.parse(String(data))); return super.send(data); }
+    send(data) {
+      wsSent.push(JSON.parse(String(data)));
+      return super.send(data);
+    }
   };
 
   return {
-    tabs, granted, localData, sessionData, attached, cdpCalls, detachCalls, wsSent, listeners, tabSandboxes,
+    tabs,
+    granted,
+    localData,
+    sessionData,
+    attached,
+    cdpCalls,
+    detachCalls,
+    wsSent,
+    listeners,
+    tabSandboxes,
     callRuntime,
     emitDbgEvent: (tabId, method, params) => listeners.dbgEvent.forEach((fn) => fn({ tabId }, method, params)),
     emitTabUpdated: (tabId, ch, tab) => listeners.tabUpdated.forEach((fn) => fn(tabId, ch, tab)),
     emitTabRemoved: (tabId) => listeners.tabRemoved.forEach((fn) => fn(tabId)),
-    restoreGlobals: () => { globalThis.chrome = orig.chrome; globalThis.fetch = orig.fetch; globalThis.WebSocket = orig.WebSocket; }
+    restoreGlobals: () => {
+      for (const sb of tabSandboxes.values()) sb.close();
+      globalThis.chrome = orig.chrome;
+      globalThis.fetch = orig.fetch;
+      globalThis.WebSocket = orig.WebSocket;
+    }
   };
 }
 
 describe('extension MV3 (popup, content, background)', () => {
-  it('popup.js gates enable button by consent, disables on sessionActive, and reverts on detach', async () => {
+  it('popup.js starts a session with one click (no consent gate, no permission prompt) and stops it', async () => {
     const orig = { doc: globalThis.document, chrome: globalThis.chrome, URL: globalThis.URL, Blob: globalThis.Blob };
     let session = null;
-    const permReqs = [], permRems = [];
+    const permReqs = [],
+      permRems = [];
     const env = makePopupEnv({
       tab: { id: 101, url: 'https://app.example.com/player' },
-      onPermReq: (q) => { permReqs.push(q); return true; },
-      onPermRem: (q) => { permRems.push(q); return true; },
+      onPermReq: (q) => {
+        permReqs.push(q);
+        return true;
+      },
+      onPermRem: (q) => {
+        permRems.push(q);
+        return true;
+      },
       onMessage: async (msg) => {
         if (msg.type === 'get_status') return { ok: true, busConnected: true, port: 47921, tab: session };
         if (msg.type === 'authorize_tab') {
           session = { tabId: 101, debuggerAttached: true, url: msg.url, viewport: { width: 390, height: 844 } };
           return { ok: true, busConnected: true, tab: session };
         }
-        if (msg.type === 'detach_tab') { session = null; return { ok: true }; }
+        if (msg.type === 'detach_tab') {
+          session = null;
+          return { ok: true };
+        }
         if (msg.type === 'set_port') return { ok: true, port: msg.port, busConnected: true };
         if (msg.type === 'export_findings') return { ok: true, report: { findings: [{ id: 'F1' }] } };
         return { ok: true };
@@ -274,57 +333,59 @@ describe('extension MV3 (popup, content, background)', () => {
     });
     globalThis.document = env.doc;
     globalThis.chrome = env.chromeMock;
-    globalThis.Blob = class { constructor(parts) { this.parts = parts; } };
+    globalThis.Blob = class {
+      constructor(parts) {
+        this.parts = parts;
+      }
+    };
     globalThis.URL = class extends orig.URL {
-      static createObjectURL() { return 'blob:mock-1'; }
+      static createObjectURL() {
+        return 'blob:mock-1';
+      }
       static revokeObjectURL() {}
     };
     try {
       await import(`../packages/extension/popup.js?case=${++modSeq}`);
       await new Promise((r) => setTimeout(r, 15));
-      assert.equal(env.elems.enableBtn.disabled, true);
-      assert.equal(env.elems.enableBtn.textContent, 'Habilitar permisos y arrancar enjambre');
+      assert.equal(env.elems.enableBtn.disabled, false, 'ready to start on any http(s) tab without ticking anything');
+      assert.equal(env.elems.enableBtn.textContent, 'Arrancar enjambre en esta pestaña');
       assert.equal(env.elems.detachBtn.disabled, true);
 
-      env.elems.consentCheck.checked = true;
-      await env.elems.consentCheck.trigger('change');
-      assert.equal(env.elems.enableBtn.disabled, false);
-
       await env.elems.enableBtn.trigger('click');
-      assert.deepEqual(permReqs, [{ origins: ['https://app.example.com/*'] }]);
+      assert.deepEqual(permReqs, [], 'no per-site permission prompt: the extension has access to every site');
       assert.equal(env.elems.enableBtn.disabled, true);
       assert.equal(env.elems.enableBtn.textContent, 'Sesión activa en esta pestaña');
       assert.equal(env.elems.detachBtn.disabled, false);
       assert.equal(env.elems.exportBtn.disabled, false);
 
-      // Toggling consentCheck while sessionActive remains disabled
-      env.elems.consentCheck.checked = false;
-      await env.elems.consentCheck.trigger('change');
-      assert.equal(env.elems.enableBtn.disabled, true);
-
       await env.elems.exportBtn.trigger('click');
       assert.equal(env.downloads[0]?.download, 'swarm-qa-findings-101.json');
 
       await env.elems.detachBtn.trigger('click');
-      assert.deepEqual(permRems, [{ origins: ['https://app.example.com/*'] }]);
-      assert.equal(env.elems.consentCheck.checked, false);
-      assert.equal(env.elems.enableBtn.textContent, 'Habilitar permisos y arrancar enjambre');
-      assert.equal(env.elems.enableBtn.disabled, true);
+      assert.deepEqual(permRems, []);
+      assert.equal(env.elems.enableBtn.textContent, 'Arrancar enjambre en esta pestaña');
+      assert.equal(env.elems.enableBtn.disabled, false);
       assert.equal(env.elems.detachBtn.disabled, true);
     } finally {
-      globalThis.document = orig.doc; globalThis.chrome = orig.chrome; globalThis.URL = orig.URL; globalThis.Blob = orig.Blob;
+      globalThis.document = orig.doc;
+      globalThis.chrome = orig.chrome;
+      globalThis.URL = orig.URL;
+      globalThis.Blob = orig.Blob;
     }
   });
 
   it('content.js handles invalid selectors safely, honors fill clear:false + [redacted], deduplicates relative fetch URLs, and sanitizes bidi chars', () => {
     const c = makeContentSandbox({ initialUrl: 'http://localhost:5173/player', title: 'Sonora\u202E\x07App', width: 390, height: 844 });
+    after(() => {
+      if (openDoms.size) c.close();
+    });
     const init = c.send({ type: 'init_overlay', nonce: 'n-1' });
     assert.equal(init.ok, true);
     assert.equal(/[\u202e\x07]/.test(init.title), false);
     assert.equal(c.getEl('__swarm_qa_overlay')?._shadowMode, 'closed');
 
     // Invalid CSS selector caught via try/catch; protected UI blocked
-    const badSel = c.send({ type: 'resolve_rect', selector: 'div[broken' });
+    const badSel = c.send({ type: 'resolve_rect', selector: '##broken' });
     assert.equal(badSel.ok, false);
     assert.match(badSel.error, /Invalid selector/i);
     assert.equal(c.send({ type: 'resolve_rect', selector: '#ag-btn' }).ok, false);
@@ -343,12 +404,22 @@ describe('extension MV3 (popup, content, background)', () => {
     assert.equal(pwRes.value, '[redacted]');
     assert.equal(c.getEl('pw').value, 'oldpwSecret99!');
 
-    // set_tickets forwards window.innerWidth
-    const origSetTickets = c.sandbox.__swarmQaContentState.overlay.setTickets;
-    let passedVp;
-    c.sandbox.__swarmQaContentState.overlay.setTickets = (list, path, vp) => { passedVp = vp; return origSetTickets(list, path, vp); };
-    c.send({ type: 'set_tickets', command: { tickets: [{ id: 'T1', pathname: '/player', severity: 'P1', status: 'open' }], pathname: '/player' } });
-    assert.equal(passedVp, 390);
+    // Overlay commands go through overlay.exec: pins are filtered by the tab's real viewport class; unknown commands fail closed
+    const pinned = c.send({
+      type: 'set_tickets',
+      command: {
+        pathname: '/player',
+        tickets: [
+          { id: 'T1', pathname: '/player', severity: 'P1', status: 'open', viewport: { width: 390, height: 844 } },
+          { id: 'T2', pathname: '/player', severity: 'P2', status: 'open', viewport: { width: 1440, height: 900 } },
+          { id: 'T3', pathname: '/other', severity: 'P2', status: 'open' }
+        ]
+      }
+    });
+    assert.deepEqual({ ok: pinned.ok, count: pinned.count, pins: pinned.pins }, { ok: true, count: 3, pins: 1 });
+    assert.equal(c.send({ type: 'spawn_cursors', command: { cursors: [{ id: 'layout', label: 'Layout' }] } }).count, 1);
+    assert.deepEqual([...c.send({ type: 'get_swarm_state' }).roles], ['layout']);
+    assert.equal(c.send({ type: 'eval_script', command: { code: '1' } }).ok, false);
 
     // Deduplicate relative MAIN-world probe fetch (/api/play) vs full CDP URL (http://localhost:5173/api/play)
     const evCtor = c.sandbox.CustomEvent;
@@ -356,7 +427,10 @@ describe('extension MV3 (popup, content, background)', () => {
     const audit = c.send({
       type: 'run_audit',
       command: { checks: ['console-net'], clearConsole: true },
-      cdpLogs: [{ kind: 'fetch', status: 503, url: 'http://localhost:5173/api/play' }, { kind: 'console.error', message: 'Crash\u202E\x07' }]
+      cdpLogs: [
+        { kind: 'fetch', status: 503, url: 'http://localhost:5173/api/play' },
+        { kind: 'console.error', message: 'Crash\u202E\x07' }
+      ]
     });
     assert.equal(audit.findings.filter((f) => f.ruleId === 'console-net-5xx').length, 1);
     const errFinding = audit.findings.find((f) => f.ruleId === 'console-net-error');
@@ -364,12 +438,14 @@ describe('extension MV3 (popup, content, background)', () => {
     // clearConsole: true emptied consoleCollector
     const auditAfter = c.send({ type: 'run_audit', command: { checks: ['console-net'] }, cdpLogs: [] });
     assert.equal(auditAfter.findings.length, 0);
+    c.close();
   });
 
   it('background.js rejects unpermitted cross-origin navigate, auto-detaches on unpermitted navigation, and resolves relative /path', async () => {
     const tmp = makeTempRegistry();
     const bus = await startSwarmBus({ port: 0, registryPath: tmp.registryPath });
     const env = makeBackgroundEnv({
+      registryPath: tmp.registryPath,
       initialTabs: [{ id: 101, url: 'http://localhost:5173/player' }],
       localStore: { swarmBusPort: bus.port }
     });
@@ -392,8 +468,14 @@ describe('extension MV3 (popup, content, background)', () => {
 
       // Disallowed cross-origin & protocol rejected without Page.navigate
       const preNavCalls = env.cdpCalls.filter((c) => c.method === 'Page.navigate').length;
-      await assert.rejects(() => bus.dispatchToTab(101, { action: 'navigate', url: 'https://evil.example/steal' }), /Permiso de origen no concedido/);
-      await assert.rejects(() => bus.dispatchToTab(101, { action: 'navigate', url: '//evil.example/phish' }), /Permiso de origen no concedido/);
+      await assert.rejects(
+        () => bus.dispatchToTab(101, { action: 'navigate', url: 'https://evil.example/steal' }),
+        /Permiso de origen no concedido/
+      );
+      await assert.rejects(
+        () => bus.dispatchToTab(101, { action: 'navigate', url: '//evil.example/phish' }),
+        /Permiso de origen no concedido/
+      );
       await assert.rejects(() => bus.dispatchToTab(101, { action: 'navigate', url: 'javascript:alert(1)' }), /http\/https/i);
       assert.equal(env.cdpCalls.filter((c) => c.method === 'Page.navigate').length, preNavCalls);
 
@@ -422,6 +504,7 @@ describe('extension MV3 (popup, content, background)', () => {
     const tmp = makeTempRegistry('swarm-ext-multi-');
     const port = await getFreePort();
     const env = makeBackgroundEnv({
+      registryPath: tmp.registryPath,
       initialTabs: [
         { id: 101, url: 'http://localhost:5173/one' },
         { id: 202, url: 'http://127.0.0.1:4173/two' }
@@ -439,8 +522,18 @@ describe('extension MV3 (popup, content, background)', () => {
 
       // Start bus after authorization and await auto-reconnect hello
       bus = await startSwarmBus({ port, autoFallbackPort: false, registryPath: tmp.registryPath });
-      const helloEv = await bus.waitForEvent(0, 4500);
-      assert.equal(helloEv.events.some((e) => e.type === 'tab_hello' && e.tabId === 101), true);
+      // The extension first announces itself (extension_hello), then re-registers its tab.
+      const seen = [];
+      for (let since = 0; !seen.some((e) => e.type === 'tab_hello' && e.tabId === 101);) {
+        const batch = await bus.waitForEvent(since, 4500);
+        assert.equal(batch.timedOut, false, `no tab_hello after reconnect; saw ${seen.map((e) => e.type).join(', ')}`);
+        seen.push(...batch.events);
+        since = batch.seq;
+      }
+      assert.equal(
+        seen.some((e) => e.type === 'browser_connected'),
+        true
+      );
 
       // Sender validation: reject privileged actions from sender.tab, allow overlay/route events
       for (const action of ['authorize_tab', 'detach_tab', 'set_port', 'export_findings']) {
@@ -449,7 +542,14 @@ describe('extension MV3 (popup, content, background)', () => {
         assert.match(res.error, /Forbidden from content script/);
       }
       const routeOk = await env.callRuntime(
-        { type: 'route_changed', tabId: 999, url: 'http://localhost:5173/two', pathname: '/two', title: 'Two', viewport: { width: 390, height: 844 } },
+        {
+          type: 'route_changed',
+          tabId: 999,
+          url: 'http://localhost:5173/two',
+          pathname: '/two',
+          title: 'Two',
+          viewport: { width: 390, height: 844 }
+        },
         { tab: { id: 101 } }
       );
       assert.equal(routeOk.ok, true);
@@ -499,6 +599,7 @@ describe('extension MV3 (popup, content, background)', () => {
     const tmp = makeTempRegistry('swarm-ext-sw-');
     const bus = await startSwarmBus({ port: 0, registryPath: tmp.registryPath });
     const env = makeBackgroundEnv({
+      registryPath: tmp.registryPath,
       initialTabs: [
         { id: 301, url: 'http://localhost:5173/recovered' },
         { id: 302, url: 'https://unpermitted.example/moved' }
@@ -523,7 +624,10 @@ describe('extension MV3 (popup, content, background)', () => {
       const st302 = await env.callRuntime({ type: 'get_status', tabId: 302 });
       assert.equal(st302.tab, null);
       assert.ok(env.detachCalls.includes(302));
-      assert.deepEqual(env.sessionData.get('swarmAuthorizedTabs').map((t) => t.tabId), [301]);
+      assert.deepEqual(
+        env.sessionData.get('swarmAuthorizedTabs').map((t) => t.tabId),
+        [301]
+      );
 
       await env.callRuntime({ type: 'detach_tab', tabId: 301 });
     } finally {

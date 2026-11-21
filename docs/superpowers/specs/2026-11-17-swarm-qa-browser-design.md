@@ -1,6 +1,8 @@
 # Swarm QA Browser — Especificación Técnica Oficial (V1 MVP)
 
-- **Repositorio:** `c:\Users\NITRO ACER\Desktop\proyectos con ia\swarm-qa-browser\`
+> **Documento histórico (v0.1).** Describe el diseño inicial. La v0.2 cambió el emparejamiento (ahora exige código), el empaquetado del overlay (esbuild) y añadió el motor de enjambre. La referencia vigente es [docs/architecture.md](../../architecture.md).
+
+- **Repositorio:** `brayancortes22/swarm-qa-browser`
 - **Ramas Git:** `main` (producción/estable) ← `qa` (staging/validación) ← `development` (desarrollo activo)
 - **Aprobación:** Validado por Brayan Stid Cortés Lombana (`bscl`) el 2026-11-17
 - **Banco de pruebas objetivo:** `sonora-music-player` (rama `development`)
