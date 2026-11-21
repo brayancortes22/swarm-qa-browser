@@ -126,6 +126,19 @@ const isAncestorOrSelf = (a, b) => {
   for (let c = b.parentElement; c; c = c.parentElement) if (c === a) return true;
   return false;
 };
+/** True when the element sits inside a `position: fixed` or `position: sticky` box. */
+function isPinned(el, win) {
+  if (typeof win?.getComputedStyle !== 'function') return false;
+  for (
+    let cur = el;
+    cur && tagOf(cur) && !tagOf(cur).startsWith('#') && (cur.nodeType == null || cur.nodeType === 1);
+    cur = cur.parentElement
+  ) {
+    const position = win.getComputedStyle(cur)?.position;
+    if (position === 'fixed' || position === 'sticky') return true;
+  }
+  return false;
+}
 const hasImgAlt = (el) =>
   Array.from(el.children || []).some((c) => (tagOf(c) === 'img' && String(attrOf(c, 'alt') ?? c.alt ?? '').trim()) || hasImgAlt(c));
 const hasAccessibleName = (el) =>
@@ -228,12 +241,14 @@ export function runDomAudit({
             (!el.children?.length && String(el.textContent || '').trim()) ||
             Array.from(el.childNodes || []).some((n) => n.nodeType === 3 && n.nodeValue?.trim()))
       )
-      .map((el) => ({ el, rect: getRect(el) }))
+      .map((el) => ({ el, rect: getRect(el), pinned: isPinned(el, win) }))
       .filter((b) => b.rect.width > 0 && b.rect.height > 0)
       .slice(0, 400);
     for (let i = 0, hits = 0; i < boxes.length && hits < 40; i += 1) {
       for (let j = i + 1; j < boxes.length && hits < 40; j += 1) {
         if (isAncestorOrSelf(boxes[i].el, boxes[j].el)) continue;
+        // A sticky/fixed bar floating over scrolled content is by design, not a collision.
+        if (boxes[i].pinned !== boxes[j].pinned) continue;
         const a = boxes[i].rect,
           b = boxes[j].rect;
         const ox = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);

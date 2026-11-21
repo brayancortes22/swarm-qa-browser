@@ -65,17 +65,31 @@ Registra el servidor en tu cliente MCP con la ruta absoluta de tu copia del repo
 
 Si no hay un bus en ejecución, el servidor MCP arranca uno embebido; el código de emparejamiento aparece en `swarm_session_status`.
 
-### Herramientas MCP (40)
+### Herramientas MCP (42)
 
 | Categoría | Herramientas |
 | :--- | :--- |
 | Sesión | `swarm_session_status`, `swarm_select_tab`, `swarm_await_event` |
 | Enjambre | `swarm_configure_swarm`, `swarm_start_tour`, `swarm_stop_tour`, `swarm_spawn_cursors`, `swarm_move_cursor` |
+| Orquestación | `swarm_post_message`, `swarm_apply_fix` |
 | Ver la página | `swarm_screenshot`, `swarm_snapshot` |
 | Actuar en la página | `swarm_click`, `swarm_hover`, `swarm_scroll`, `swarm_fill`, `swarm_press_key`, `swarm_navigate`, `swarm_set_viewport`, `swarm_acquire_lock`, `swarm_release_lock` |
 | Verificar | `swarm_wait_for`, `swarm_expect`, `swarm_test_report` |
 | Auditoría y tickets | `swarm_run_dom_audit`, `swarm_report_finding`, `swarm_list_findings`, `swarm_claim_findings`, `swarm_mark_fixed`, `swarm_verify_finding`, `swarm_heal_findings` |
 | Todo el PC | `swarm_desktop_status`, `swarm_desktop_screenshot`, `swarm_desktop_list_windows`, `swarm_desktop_focus_window`, `swarm_desktop_move`, `swarm_desktop_click`, `swarm_desktop_drag`, `swarm_desktop_scroll`, `swarm_desktop_type`, `swarm_desktop_key`, `swarm_desktop_open` |
+
+## Orquestación: un agente dirige al enjambre
+
+Un agente orquestador (el modelo que uses por MCP) puede dirigir el trabajo completo y dejarlo a la vista en la **bitácora** de la página:
+
+1. **Instruye** al equipo con `swarm_post_message` y reparte los cursores con rol.
+2. **Los revisores auditan** (`swarm_run_dom_audit`): cada rol anota sus hallazgos en la bitácora y se crean los tickets.
+3. **El orquestador lee el informe** (`swarm_list_findings`) y **decide** ticket a ticket:
+   - receta automática → `swarm_heal_findings`;
+   - corrección propia → `swarm_apply_fix { ticketId, selector, declarations }`, que se verifica con una re-auditoría y se revierte si no funciona;
+   - tickets derivados de la misma causa → `swarm_mark_fixed`, que los re-audita;
+   - lo que no se puede arreglar en la página → queda abierto.
+4. **Ordena rehacer la página** capa a capa con `swarm_start_tour` y pide una auditoría final.
 
 ## Pruebas dirigidas por la IA
 
@@ -130,7 +144,7 @@ Los parches de `heal` solo viven en la página abierta. `.qa/patches.json` conti
 ## Desarrollo
 
 ```bash
-npm test                   # 57 pruebas unitarias y de integración (node:test + jsdom)
+npm test                   # 58 pruebas unitarias y de integración (node:test + jsdom)
 npm run test:e2e           # flujo completo en Chromium real; necesita Playwright
 npm run test:e2e:desktop   # ratón y teclado reales sobre una ventana visible
 npm run lint
@@ -145,7 +159,7 @@ Para la prueba E2E: `npm i -D playwright && npx playwright install chromium`. De
 packages/
   core/             Bus local (HTTP + WebSocket + SSE), tickets, candados, emparejamiento, parches
   overlay/          Motor del enjambre: cursores, selección, reglas, tour, auditor, pines, HUD
-  mcp-server/       Servidor MCP por stdio (40 herramientas)
+  mcp-server/       Servidor MCP por stdio (42 herramientas)
   extension/        Extensión Chrome MV3 (chrome.debugger, consentimiento, emparejamiento)
   cdp-adapter/      Puente CDP para Chromium con depuración remota
   desktop-adapter/  Control del PC: pantalla, ratón, teclado y ventanas (Windows y Linux/X11)

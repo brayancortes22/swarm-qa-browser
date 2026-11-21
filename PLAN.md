@@ -12,6 +12,7 @@ Este documento separa lo que **funciona y está probado** de lo que está pendie
 - Tres transportes probados en Chromium real: página standalone, puente CDP y extensión MV3.
 - CLI `npm run swarm`, página de demostración, lint, formato y CI.
 - Pruebas dirigidas por IA en la web: captura, esquema de página, acciones por texto visible, esperas, comprobaciones con reintento e informe en `.qa/`.
+- Orquestación visible: bitácora en la página, notas automáticas de cada revisor y correcciones propias del orquestador verificadas por re-auditoría (`swarm_apply_fix`).
 - Control total del PC por MCP (pantalla, ratón, teclado, ventanas, abrir programas). Probado de extremo a extremo en Linux/X11.
 
 ## Siguiente

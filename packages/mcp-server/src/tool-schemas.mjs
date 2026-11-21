@@ -286,6 +286,35 @@ export const SWARM_TOOLS = Object.freeze([
     [],
     RO
   ),
+  // --- Orchestration ---
+  tool(
+    'swarm_post_message',
+    'Write in the on-page mission log: instructions for the swarm, a decision, or a note. Agents report their findings there too.',
+    {
+      tabId: TAB,
+      from: { type: 'string', description: 'Author shown in the log, e.g. the orchestrator name' },
+      text: { type: 'string' },
+      kind: { type: 'string', enum: ['instruction', 'report', 'decision', 'done', 'note'] },
+      color: { type: 'string' }
+    },
+    ['text'],
+    ACT
+  ),
+  tool(
+    'swarm_apply_fix',
+    'Apply YOUR OWN fix for an open ticket (CSS declarations or an aria/title/alt/role attribute, optionally on another selector) under lock, re-audit, and keep it only if the finding is gone; otherwise it is reverted.',
+    {
+      ticketId: { type: 'string' },
+      selector: { type: 'string', description: 'Element to patch (defaults to the ticket element)' },
+      declarations: { type: 'object', description: 'CSS declarations, e.g. { "flex-wrap": "wrap" }' },
+      attr: { type: 'object', properties: { name: { type: 'string' }, value: { type: 'string' } } },
+      title: { type: 'string' },
+      agentId: AGENT
+    },
+    ['ticketId'],
+    ACT
+  ),
+
   // --- Web testing: observe, act, verify ---
   tool(
     'swarm_screenshot',

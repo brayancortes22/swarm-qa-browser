@@ -35,6 +35,8 @@ const EXPECTED_TOOLS = [
   'swarm_heal_findings',
   'swarm_verify_finding',
   'swarm_await_event',
+  'swarm_post_message',
+  'swarm_apply_fix',
   'swarm_screenshot',
   'swarm_snapshot',
   'swarm_hover',
@@ -158,7 +160,7 @@ function connectMockTab(
 }
 
 describe('mcp-server tools & stdio transport', () => {
-  it('exposes all 40 tool schemas and handles initialize, notifications, and tools/list (plus Content-Length)', async () => {
+  it('exposes all 42 tool schemas and handles initialize, notifications, and tools/list (plus Content-Length)', async () => {
     assert.equal(SWARM_TOOLS.length, EXPECTED_TOOLS.length);
     for (const name of EXPECTED_TOOLS) {
       const tool = SWARM_TOOLS.find((t) => t.name === name);
@@ -692,6 +694,32 @@ describe('mcp-server swarm control & self-healing', () => {
       assert.match(heal.data.skipped[0].reason, /no automatic recipe/);
       assert.equal(heal.data.manifest.totalPatches, 1);
       assert.equal(tab.state.commands.filter((c) => c.action === 'revert_patch').length, 1);
+
+      // The orchestrator designs its own fix for the ticket the recipe could not close.
+      const notes = tab.state.commands.filter((c) => c.action === 'post_message');
+      assert.deepEqual(
+        notes.map((n) => n.from),
+        ['Layout', 'Forms & A11y', 'Healer']
+      );
+      assert.match(notes[0].text, /2 hallazgos: overflow-container ×1, overlap-elements ×1/);
+      const overflowTicket = bus.store.list().find((t) => t.ruleId === 'overflow-container');
+      const custom = await client.callTool('swarm_apply_fix', {
+        ticketId: overflowTicket.id,
+        selector: '#badge',
+        declarations: { top: '8px' },
+        title: 'Mover etiqueta'
+      });
+      assert.equal(custom.data.verified, false);
+      assert.match(custom.data.reason, /reverted/);
+      assert.equal(tab.state.commands.findLast((c) => c.action === 'apply_patch').patch.selector, '#badge');
+      await client.callTool('swarm_post_message', { from: 'Orquestador', kind: 'decision', text: 'Dejar T-1 para desarrollo' });
+      assert.deepEqual(tab.state.commands.at(-1), {
+        action: 'post_message',
+        from: 'Orquestador',
+        text: 'Dejar T-1 para desarrollo',
+        kind: 'decision'
+      });
+      assert.equal((await client.callTool('swarm_apply_fix', { ticketId: 'T-999', declarations: { color: 'red' } })).isError, true);
 
       const byRule = Object.fromEntries(bus.store.list().map((t) => [t.ruleId, t]));
       assert.equal(byRule['a11y-form-label'].status, 'verified');

@@ -180,6 +180,18 @@ test('overlay mounts in a closed shadow root, drives role cursors, pins and swar
   await until(() => events.some((e) => e.type === 'route_change' && e.pathname === '/other'));
   assert.equal(shadow.querySelectorAll('.sw-pin').length, 1);
 
+  // Mission log: orchestrator instructions and agent reports, always rendered as text.
+  assert.equal(shadow.querySelector('.sw-feed').hasAttribute('data-on'), false);
+  assert.equal(overlay.exec('post_message', { from: 'Orquestador', kind: 'instruction', text: 'Auditad <b>todo</b>\u202E' }).ok, true);
+  assert.equal(overlay.exec('post_message', { from: 'Layout', kind: 'report', text: '' }).ok, false);
+  const entry = shadow.querySelector('.sw-feed-item');
+  assert.deepEqual(
+    [entry.dataset.kind, entry.querySelector('.sw-feed-text').textContent, entry.querySelector('b')],
+    ['instruction', 'Auditad <b>todo</b>', null]
+  );
+  assert.equal(overlay.exec('clear_messages').ok, true);
+  assert.equal(shadow.querySelectorAll('.sw-feed-item').length, 0);
+
   overlay.destroy();
   assert.equal(doc.getElementById('__swarm_qa_overlay'), null);
   assert.deepEqual(overlay.exec('get_swarm_state'), { ok: false, error: 'Overlay destroyed' });

@@ -97,6 +97,14 @@
     for (let c = b.parentElement; c; c = c.parentElement) if (c === a) return true;
     return false;
   };
+  function isPinned(el, win) {
+    if (typeof win?.getComputedStyle !== "function") return false;
+    for (let cur = el; cur && tagOf(cur) && !tagOf(cur).startsWith("#") && (cur.nodeType == null || cur.nodeType === 1); cur = cur.parentElement) {
+      const position = win.getComputedStyle(cur)?.position;
+      if (position === "fixed" || position === "sticky") return true;
+    }
+    return false;
+  }
   var hasImgAlt = (el) => Array.from(el.children || []).some((c) => tagOf(c) === "img" && String(attrOf(c, "alt") ?? c.alt ?? "").trim() || hasImgAlt(c));
   var hasAccessibleName = (el) => Boolean(
     String(el.textContent || "").trim() || attrOf(el, "aria-label")?.trim() || attrOf(el, "aria-labelledby")?.trim() || attrOf(el, "title")?.trim() || hasImgAlt(el)
@@ -178,10 +186,11 @@
     if (active.has("overlap")) {
       const boxes = vis.filter(
         (el) => tagOf(el) !== "html" && tagOf(el) !== "body" && (isControl(el) || !el.children?.length && String(el.textContent || "").trim() || Array.from(el.childNodes || []).some((n) => n.nodeType === 3 && n.nodeValue?.trim()))
-      ).map((el) => ({ el, rect: getRect(el) })).filter((b) => b.rect.width > 0 && b.rect.height > 0).slice(0, 400);
+      ).map((el) => ({ el, rect: getRect(el), pinned: isPinned(el, win) })).filter((b) => b.rect.width > 0 && b.rect.height > 0).slice(0, 400);
       for (let i = 0, hits = 0; i < boxes.length && hits < 40; i += 1) {
         for (let j = i + 1; j < boxes.length && hits < 40; j += 1) {
           if (isAncestorOrSelf(boxes[i].el, boxes[j].el)) continue;
+          if (boxes[i].pinned !== boxes[j].pinned) continue;
           const a = boxes[i].rect, b = boxes[j].rect;
           const ox = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
           const oy = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
@@ -525,6 +534,61 @@
     const n = parseInt(m[1], 16);
     const lum = (0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255)) / 255;
     return lum > 0.66 ? "#0b0c10" : "#ffffff";
+  }
+
+  // packages/overlay/src/feed.js
+  var KINDS = { instruction: "Instrucción", report: "Informe", decision: "Decisión", done: "Hecho", note: "Nota" };
+  var MAX_ENTRIES = 40;
+  function createFeed(doc, container) {
+    const panel = h(doc, "section", "sw-feed", void 0, { "aria-label": "Bitácora del enjambre" });
+    const head = h(doc, "header", "sw-feed-head");
+    const title = h(doc, "span", "sw-feed-title", "Bitácora");
+    const toggle = h(doc, "button", "sw-btn sw-btn-ghost sw-btn-icon", "–", {
+      type: "button",
+      "aria-label": "Plegar bitácora",
+      "aria-expanded": "true"
+    });
+    const list = h(doc, "ol", "sw-feed-list", void 0, { role: "log", "aria-live": "polite" });
+    head.append(title, toggle);
+    panel.append(head, list);
+    container.appendChild(panel);
+    let count = 0;
+    toggle.addEventListener("click", () => {
+      const collapsed = panel.toggleAttribute("data-collapsed");
+      toggle.textContent = collapsed ? "+" : "–";
+      toggle.setAttribute("aria-expanded", String(!collapsed));
+    });
+    function post({ from, text, kind = "note", color } = {}) {
+      const body = cleanText(text, 320);
+      if (!body) return false;
+      const author = cleanText(from || "Agente", 32);
+      const tone = safeColor(color, "#64748b");
+      const item = h(doc, "li", "sw-feed-item", void 0, { "data-kind": Object.hasOwn(KINDS, kind) ? kind : "note" });
+      const avatar = h(doc, "span", "sw-feed-avatar", author.slice(0, 1).toUpperCase());
+      avatar.style.background = tone;
+      avatar.style.color = inkFor(tone);
+      const meta = h(doc, "div", "sw-feed-meta");
+      meta.append(h(doc, "strong", "sw-feed-from", author), h(doc, "span", "sw-feed-kind", KINDS[kind] || KINDS.note));
+      const content = h(doc, "div", "sw-feed-body");
+      content.append(meta, h(doc, "p", "sw-feed-text", body));
+      item.append(avatar, content);
+      list.appendChild(item);
+      while (list.children.length > MAX_ENTRIES) list.firstChild.remove();
+      list.scrollTop = list.scrollHeight;
+      count += 1;
+      panel.setAttribute("data-on", "");
+      title.textContent = `Bitácora · ${count}`;
+      return true;
+    }
+    return {
+      post,
+      clear() {
+        list.replaceChildren();
+        count = 0;
+        panel.removeAttribute("data-on");
+      },
+      destroy: () => panel.remove()
+    };
   }
 
   // packages/overlay/src/hud.js
@@ -1502,6 +1566,23 @@
 .sw-ripple{position:absolute;left:-12px;top:-12px;width:28px;height:28px;border:2px solid;border-radius:999px;animation:sw-ripple .6s cubic-bezier(0,0,.2,1) forwards}
 @keyframes sw-ripple{from{transform:scale(.2);opacity:1}to{transform:scale(2.4);opacity:0}}
 
+/* Mission log */
+.sw-feed{pointer-events:auto;position:fixed;right:14px;top:74px;z-index:6;display:none;flex-direction:column;width:300px;max-width:calc(100vw - 28px);max-height:min(62vh,520px);border-radius:12px;background:rgba(17,18,23,.94);border:1px solid rgba(255,255,255,.09);box-shadow:0 14px 36px rgba(0,0,0,.42);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);overflow:hidden}
+.sw-feed[data-on]{display:flex;animation:sw-pop-in .24s var(--ease) both}
+.sw-feed-head{display:flex;align-items:center;justify-content:space-between;padding:6px 6px 6px 12px;border-bottom:1px solid rgba(255,255,255,.08);font-size:11.5px;font-weight:600;color:#e4e4e7}
+.sw-feed-list{display:flex;flex-direction:column;gap:10px;margin:0;padding:10px 12px 12px;list-style:none;overflow-y:auto;scrollbar-width:thin}
+.sw-feed[data-collapsed] .sw-feed-list{display:none}
+.sw-feed-item{display:flex;gap:8px;animation:sw-pop-in .26s var(--ease) both}
+.sw-feed-avatar{flex:0 0 auto;display:grid;place-items:center;width:20px;height:20px;border-radius:999px;font-size:10px;font-weight:700}
+.sw-feed-body{min-width:0}
+.sw-feed-meta{display:flex;align-items:center;gap:6px;margin-bottom:2px}
+.sw-feed-from{font-size:11px;font-weight:600;color:#f4f4f5}
+.sw-feed-kind{padding:1px 6px;border-radius:999px;background:rgba(255,255,255,.08);font-size:9.5px;font-weight:600;color:#a1a1aa}
+.sw-feed-item[data-kind="instruction"] .sw-feed-kind{background:rgba(13,153,255,.2);color:#7cc8ff}
+.sw-feed-item[data-kind="decision"] .sw-feed-kind{background:rgba(255,180,0,.2);color:#ffd166}
+.sw-feed-item[data-kind="done"] .sw-feed-kind{background:rgba(34,197,94,.2);color:#86efac}
+.sw-feed-text{margin:0;font-size:11.5px;line-height:1.45;color:#d4d4d8;word-break:break-word}
+
 /* HUD */
 .sw-hud{pointer-events:auto;position:fixed;left:50%;bottom:16px;z-index:6;display:flex;align-items:center;gap:8px;max-width:calc(100vw - 24px);padding:6px 8px 6px 10px;border-radius:12px;background:rgba(17,18,23,.94);border:1px solid rgba(255,255,255,.09);box-shadow:0 12px 34px rgba(0,0,0,.42);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);font-variant-numeric:tabular-nums;white-space:nowrap;transform:translateX(-50%);transition:transform .32s var(--ease),opacity .2s ease}
 .sw-hud[data-min]{transform:translate(-50%,160%);opacity:0;pointer-events:none}
@@ -2083,7 +2164,9 @@
     "get_swarm_state",
     "snapshot",
     "query",
-    "scroll"
+    "scroll",
+    "post_message",
+    "clear_messages"
   ]);
   var boxOf3 = (rect) => ({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
   function mountSwarmOverlay({
@@ -2118,6 +2201,7 @@
     const patches = createPatchManager(doc);
     const consoleCollector = createConsoleCollector({ targetWindow: win, nonce, maxEntries: 100 });
     const roleSelections = /* @__PURE__ */ new Map();
+    const feed = createFeed(doc, root);
     let destroyed = false;
     let cachedTickets = [];
     let currentRoute = win?.location?.pathname || "/";
@@ -2359,6 +2443,8 @@
       get_swarm_state: () => ({ ok: true, ...getState() }),
       snapshot: (cmd) => ({ ok: true, ...snapshotPage({ doc, win, scope: cmd.scope === "page" ? "page" : "viewport", max: cmd.max }) }),
       query: (cmd) => ({ ok: true, ...queryElement({ doc, win, selector: cmd.selector, text: cmd.text, prefer: cmd.prefer }) }),
+      post_message: (cmd) => ({ ok: feed.post({ ...cmd, color: cmd.color ?? swarm.get(cmd.agentId ?? cmd.from)?.color }) }),
+      clear_messages: () => (feed.clear(), { ok: true }),
       scroll: (cmd) => scrollPage({ doc, win, selector: cmd.selector, to: cmd.to, by: cmd.by, smooth: cmd.smooth !== false })
     };
     function exec(action, command = {}) {

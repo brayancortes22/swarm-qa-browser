@@ -156,3 +156,21 @@ test('console-net maps severities and auditor ignores overlay/hidden/zero-opacit
   );
   assert.equal(/[\u202e\x07]/.test(net[0].description), false);
 });
+
+test('overlap check ignores sticky or fixed bars floating over scrolled content', () => {
+  const navLink = el('a', { id: 'nav-link', attrs: { href: '/' }, text: 'Inicio', rect: { x: 20, y: 10, width: 80, height: 24 } });
+  const header = el('header', {
+    id: 'nav',
+    style: { position: 'sticky' },
+    rect: { x: 0, y: 0, width: 390, height: 44 },
+    children: [navLink]
+  });
+  const heading = el('h2', { id: 'under-nav', text: 'Título que pasa por debajo', rect: { x: 20, y: 14, width: 300, height: 30 } });
+  const other = el('p', { id: 'real-collision', text: 'Texto encima del título', rect: { x: 30, y: 20, width: 200, height: 20 } });
+  const { doc, win } = makeDoc([header, heading, other]);
+  const findings = runDomAudit({ doc, win, checks: ['overlap'], viewport: { width: 390, height: 844 } });
+  assert.deepEqual(
+    findings.map((f) => f.selector),
+    ['#real-collision']
+  );
+});

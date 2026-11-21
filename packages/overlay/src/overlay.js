@@ -1,6 +1,7 @@
 import { createClock } from './clock.js';
 import { runDomAudit } from './dom-auditor.js';
 import { cleanText, h, isFiniteNumber, queryOne, safeColor, toBox } from './dom-utils.js';
+import { createFeed } from './feed.js';
 import { createHud } from './hud.js';
 import { createInspector } from './inspector.js';
 import { createIssuePins } from './issue-pins.js';
@@ -37,7 +38,9 @@ export const OVERLAY_ACTIONS = Object.freeze([
   'get_swarm_state',
   'snapshot',
   'query',
-  'scroll'
+  'scroll',
+  'post_message',
+  'clear_messages'
 ]);
 
 const boxOf = (rect) => ({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
@@ -81,6 +84,7 @@ export function mountSwarmOverlay({
   const patches = createPatchManager(doc);
   const consoleCollector = createConsoleCollector({ targetWindow: win, nonce, maxEntries: 100 });
   const roleSelections = new Map();
+  const feed = createFeed(doc, root);
 
   let destroyed = false;
   let cachedTickets = [];
@@ -354,6 +358,8 @@ export function mountSwarmOverlay({
     get_swarm_state: () => ({ ok: true, ...getState() }),
     snapshot: (cmd) => ({ ok: true, ...snapshotPage({ doc, win, scope: cmd.scope === 'page' ? 'page' : 'viewport', max: cmd.max }) }),
     query: (cmd) => ({ ok: true, ...queryElement({ doc, win, selector: cmd.selector, text: cmd.text, prefer: cmd.prefer }) }),
+    post_message: (cmd) => ({ ok: feed.post({ ...cmd, color: cmd.color ?? swarm.get(cmd.agentId ?? cmd.from)?.color }) }),
+    clear_messages: () => (feed.clear(), { ok: true }),
     scroll: (cmd) => scrollPage({ doc, win, selector: cmd.selector, to: cmd.to, by: cmd.by, smooth: cmd.smooth !== false })
   };
 

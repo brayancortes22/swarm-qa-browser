@@ -8,6 +8,15 @@ const TICKET_FIELDS = ['ruleId', 'severity', 'category', 'selector', 'rect', 'de
 const LOCK_TTL_MS = 15_000;
 const DEFAULT_HMR_WAIT_MS = 800;
 const MAX_HEAL_TICKETS = 25;
+/** Which reviewing role owns each audit category. */
+const REVIEWER_BY_CATEGORY = {
+  overflow: 'layout',
+  overlap: 'layout',
+  a11y: 'forms-a11y',
+  media: 'responsive',
+  'tap-target': 'responsive',
+  'console-net': 'console-net'
+};
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const pick = (source, keys) => Object.fromEntries(keys.filter((key) => source?.[key] !== undefined).map((key) => [key, source[key]]));
@@ -172,6 +181,7 @@ export function buildToolHandlers(call, { desktopDriver, recorder = createTestRe
       createdTickets = ingest.created;
     }
     await refreshPins([tab.tabId]);
+    if (args.notes !== false) await postAuditNotes(tab.tabId, findings);
     return { tabId: tab.tabId, pathname, viewport, createdTickets, findingsCount: findings.length, untrustedPageData: true };
   }
 
@@ -250,6 +260,116 @@ export function buildToolHandlers(call, { desktopDriver, recorder = createTestRe
     return { tickets, verifications, untrustedPageData: true };
   }
 
+  /** Writes an entry in the tab's mission log; never fails the calling tool. */
+  const postNote = (tabId, entry) => call('tab.command', { tabId, command: { action: 'post_message', ...entry } }).catch(() => {});
+
+  /** Each reviewing role reports its own findings in the mission log, like a teammate's note. */
+  async function postAuditNotes(tabId, findings) {
+    const byRole = new Map();
+    for (const finding of findings) {
+      const role = REVIEWER_BY_CATEGORY[finding.category] ?? 'layout';
+      if (!byRole.has(role)) byRole.set(role, new Map());
+      const rules = byRole.get(role);
+      rules.set(finding.ruleId, (rules.get(finding.ruleId) || 0) + 1);
+    }
+    for (const [role, rules] of byRole) {
+      const total = [...rules.values()].reduce((sum, n) => sum + n, 0);
+      const detail = [...rules].map(([ruleId, n]) => `${ruleId} ×${n}`).join(', ');
+      await postNote(tabId, {
+        from: DEFAULT_ROLES[role].label,
+        agentId: role,
+        color: DEFAULT_ROLES[role].color,
+        kind: 'report',
+        text: `${total} ${total === 1 ? 'hallazgo' : 'hallazgos'}: ${detail}`
+      });
+    }
+    if (!findings.length)
+      await postNote(tabId, {
+        from: DEFAULT_ROLES.layout.label,
+        agentId: 'layout',
+        color: DEFAULT_ROLES.layout.color,
+        kind: 'report',
+        text: 'Sin hallazgos en esta vista.'
+      });
+  }
+
+  /**
+   * Applies one reversible patch for a ticket under lock and re-audits. The patch is kept and the
+   * ticket verified only when the finding is gone; otherwise the patch is reverted.
+   */
+  async function tryPatch(ticket, patch, healer) {
+    const lockArgs = { tabId: ticket.tabId, agentId: healer, label: 'Healer', selector: patch.selector };
+    const applied = await withMutationLock(lockArgs, 'patch', 'interactive', 'Aplicando parche', { action: 'apply_patch', patch });
+    if (!applied?.ok)
+      return { failed: { ticketId: ticket.id, reason: 'patch could not be applied (element not found or patch rejected)' } };
+    const audit = await call('tab.command', {
+      tabId: ticket.tabId,
+      command: { action: 'run_audit', animate: false, ...(ticket.viewport ? { viewport: ticket.viewport } : {}) }
+    });
+    const persists = (Array.isArray(audit?.findings) ? audit.findings : []).some((finding) => findingMatchesTicket(finding, ticket));
+    if (persists) {
+      await withMutationLock(lockArgs, 'patch', 'interactive', 'Revirtiendo parche', { action: 'revert_patch', id: patch.id });
+      return { failed: { ticketId: ticket.id, reason: 'finding persisted after patch; patch reverted' } };
+    }
+    await call('tickets.markFixed', { ticketIds: [ticket.id], devAgentId: healer, summary: `Hot patch (runtime only): ${patch.title}` });
+    const verified = await call('tickets.verify', {
+      id: ticket.id,
+      agentId: 'layout',
+      passed: true,
+      evidence: { hotPatch: true, patchId: patch.id, change: patch.css || `${patch.attr.name}="${patch.attr.value}"` }
+    });
+    return {
+      healed: {
+        ticketId: ticket.id,
+        status: verified.status,
+        patch: { id: patch.id, selector: patch.selector, css: patch.css || null, attr: patch.attr || null, title: patch.title }
+      }
+    };
+  }
+
+  /**
+   * Orchestrator-designed fix: apply the caller's own declarations/attribute for one ticket and
+   * verify it with a re-audit, exactly like a recipe.
+   */
+  async function applyFix(args) {
+    const ticket = (await call('tickets.list', { status: ['open', 'reopened'] })).find((t) => t.id === args.ticketId);
+    if (!ticket) throw new Error(`Ticket ${args.ticketId} is not open`);
+    const selector = String(args.selector || ticket.selector || '').trim();
+    const declarations = args.declarations && typeof args.declarations === 'object' ? args.declarations : null;
+    if (!selector || (!declarations && !args.attr)) throw new Error('swarm_apply_fix needs declarations or attr, and a selector');
+    const patch = {
+      id: `patch-${randomUUID().slice(0, 8)}`,
+      ruleId: ticket.ruleId,
+      selector,
+      title: String(args.title || 'Corrección decidida por el orquestador').slice(0, 120),
+      ...(declarations
+        ? {
+            type: 'css',
+            declarations,
+            css: `${selector} { ${Object.entries(declarations)
+              .map(([prop, value]) => `${prop}: ${value};`)
+              .join(' ')} }`
+          }
+        : { type: 'attr', attr: args.attr })
+    };
+    const healer = (typeof args.agentId === 'string' && args.agentId.trim()) || 'healer';
+    const outcome = await tryPatch(ticket, patch, healer);
+    await refreshPins([ticket.tabId]);
+    await postNote(ticket.tabId, {
+      from: 'Healer',
+      agentId: healer,
+      kind: outcome.healed ? 'done' : 'report',
+      text: outcome.healed
+        ? `${ticket.id} corregido y verificado: ${patch.title}`
+        : `${ticket.id}: la corrección no eliminó el hallazgo y se revirtió.`
+    });
+    return {
+      ...(outcome.healed ?? { ticketId: ticket.id, status: ticket.status, ...outcome.failed }),
+      verified: Boolean(outcome.healed),
+      untrustedPageData: true
+    };
+  }
+
   /**
    * Self-healing: for each open ticket with a known recipe, apply a reversible hot patch, re-audit
    * and keep the patch only if the finding is really gone. Failed patches are reverted and the
@@ -283,37 +403,17 @@ export function buildToolHandlers(call, { desktopDriver, recorder = createTestRe
         skipped.push({ ticketId: ticket.id, reason: skipReason });
         continue;
       }
-      const lockArgs = { tabId: ticket.tabId, agentId: healer, label: 'Healer', selector: ticket.selector };
-      const applied = await withMutationLock(lockArgs, 'patch', 'interactive', 'Aplicando parche', { action: 'apply_patch', patch });
-      if (!applied?.ok) {
-        failed.push({ ticketId: ticket.id, reason: 'patch could not be applied (element not found or patch rejected)' });
-        continue;
+      const outcome = await tryPatch(ticket, patch, healer);
+      if (outcome.healed) {
+        keptPatches.push(patch);
+        healed.push(outcome.healed);
+      } else {
+        failed.push(outcome.failed);
       }
-      const audit = await call('tab.command', {
-        tabId: ticket.tabId,
-        command: { action: 'run_audit', animate: false, ...(ticket.viewport ? { viewport: ticket.viewport } : {}) }
-      });
-      const persists = (Array.isArray(audit?.findings) ? audit.findings : []).some((finding) => findingMatchesTicket(finding, ticket));
-      if (persists) {
-        await withMutationLock(lockArgs, 'patch', 'interactive', 'Revirtiendo parche', { action: 'revert_patch', id: patch.id });
-        failed.push({ ticketId: ticket.id, reason: 'finding persisted after patch; patch reverted' });
-        continue;
-      }
-      await call('tickets.markFixed', { ticketIds: [ticket.id], devAgentId: healer, summary: `Hot patch (runtime only): ${patch.title}` });
-      const verified = await call('tickets.verify', {
-        id: ticket.id,
-        agentId: 'layout',
-        passed: true,
-        evidence: { hotPatch: true, patchId: patch.id, change: patch.css || `${patch.attr.name}="${patch.attr.value}"` }
-      });
-      keptPatches.push(patch);
-      healed.push({
-        ticketId: ticket.id,
-        status: verified.status,
-        patch: { id: patch.id, selector: patch.selector, css: patch.css || null, attr: patch.attr || null, title: patch.title }
-      });
     }
 
+    const summary = `${healed.length} corregidos y verificados, ${failed.length} revertidos, ${skipped.length} sin receta.`;
+    if (candidates.length) await postNote(candidates[0].tabId, { from: 'Healer', agentId: healer, kind: 'done', text: summary });
     await refreshPins(candidates.map((t) => t.tabId));
     return {
       healed,
@@ -404,6 +504,12 @@ export function buildToolHandlers(call, { desktopDriver, recorder = createTestRe
     },
     swarm_mark_fixed: markFixed,
     swarm_heal_findings: healFindings,
+    swarm_apply_fix: applyFix,
+    swarm_post_message: (a) =>
+      call('tab.command', {
+        tabId: a.tabId,
+        command: { action: 'post_message', ...pick(a, ['from', 'text', 'kind', 'color', 'agentId']) }
+      }),
     async swarm_verify_finding(a) {
       const ticket = await call('tickets.verify', {
         id: a.id ?? a.ticketId,

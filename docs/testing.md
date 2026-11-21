@@ -6,14 +6,14 @@
 npm test
 ```
 
-Ejecuta 57 pruebas con `node:test`. No necesitan navegador.
+Ejecuta 58 pruebas con `node:test`. No necesitan navegador.
 
 | Archivo | Cubre |
 | :--- | :--- |
 | `ticket-store.test.mjs` | Ciclo de vida de tickets, 3 rondas exactas, saneado de texto. |
 | `lock-manager.test.mjs` | Exclusión mutua, TTL, renovación y registro del bus. |
 | `swarm-bus-security.test.mjs` | Orígenes (`403`), token (`401`), código de emparejamiento y límite de intentos, `tab_closed`, roles de solo lectura, candado de parches, `tickets.ingest`, SSE. |
-| `mcp-server.test.mjs` | Protocolo stdio, las 40 herramientas, bucle QA → Dev → re-verificación, auto-sanación, herramientas de prueba (texto visible, esperas, comprobaciones, informe) y de escritorio con un controlador simulado. |
+| `mcp-server.test.mjs` | Protocolo stdio, las 42 herramientas, bucle QA → Dev → re-verificación, auto-sanación, herramientas de prueba (texto visible, esperas, comprobaciones, informe) y de escritorio con un controlador simulado. |
 | `patch-generator.test.mjs` | Recetas alineadas con las reglas del auditor, rechazo de selectores peligrosos. |
 | `dom-auditor.test.mjs` | Cada comprobación del auditor y la redacción de campos sensibles. |
 | `overlay.test.mjs` | Motor del overlay sobre jsdom: capas, cursores, pines, parches, tour, restauración exacta de la página y lector de página (esquema, búsqueda por texto, redacción). |

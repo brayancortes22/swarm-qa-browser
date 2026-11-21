@@ -6,7 +6,7 @@
   Cliente MCP (Antigravity, Claude Code, Cursor)        CLI `npm run swarm`
               │ stdio · JSON-RPC 2.0                          │
               ▼                                               │
-     packages/mcp-server  (40 herramientas) ──► packages/desktop-adapter (pantalla, ratón, teclado)
+     packages/mcp-server  (42 herramientas) ──► packages/desktop-adapter (pantalla, ratón, teclado)
               │ POST /rpc + x-swarm-token                     │
               ▼                                               ▼
      packages/core/src/swarm-bus.mjs  ── 127.0.0.1:47921 ──────────────
@@ -41,6 +41,7 @@ El overlay es un único bundle (`overlay.bundle.js`, generado con esbuild) que l
 | `issue-pins.js`, `hud.js` | Pines que siguen a su elemento y barra de control. |
 | `patches.js` | Parches reversibles validados (declaraciones CSS o atributos `aria-*`, `title`, `alt`, `role`). |
 | `page-reader.js` | Lectura para agentes de prueba: esquema de elementos interactivos, búsqueda por texto visible o etiqueta de campo, y scroll. |
+| `feed.js` | Bitácora: instrucciones del orquestador, informes de los revisores y decisiones, siempre como texto. |
 | `network-console.js` | Sonda del mundo MAIN que reenvía errores de consola y red con un nonce. |
 
 **Tiempo real.** El bus solo envía órdenes de alto nivel ("ve a este selector", "empieza el tour"). El movimiento se calcula en la página, por lo que no depende de la latencia del bus. El progreso vuelve como eventos (`tour_progress`, `tour_done`, `audit_report`).
