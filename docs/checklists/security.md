@@ -18,5 +18,6 @@ Cada punto indica la prueba que lo verifica.
 
 ## Riesgos aceptados
 
+- **El control del PC no tiene salvaguardas.** Las herramientas `swarm_desktop_*` permiten ver la pantalla, escribir en cualquier ventana y abrir programas sin confirmación, límite ni lista de permitidos. Es una decisión expresa del propietario del proyecto. Un agente comprometido o confundido por contenido malicioso (por ejemplo, texto de una página que le dé instrucciones) puede hacer en el equipo todo lo que podría hacer su usuario.
 - Cualquier proceso del mismo usuario puede leer `bus.json` y usar el bus. El modelo protege frente a páginas web y otros usuarios de la máquina, no frente a software que ya se ejecuta con tu cuenta.
 - El token viaja en la URL del WebSocket (`?token=`) porque la API de WebSocket del navegador no admite cabeceras. La conexión es solo loopback.

@@ -1,6 +1,6 @@
 # Swarm QA Browser
 
-Un enjambre de cursores de IA que audita páginas web **en vivo**: decenas de agentes se mueven sobre la página real, seleccionan elementos como en una herramienta de diseño, registran hallazgos anclados al DOM, aplican parches de prueba y vuelven a verificar. Todo se controla desde cualquier cliente MCP (Antigravity, Claude Code, Cursor, Codex) o desde la línea de comandos.
+Un enjambre de cursores de IA que audita páginas web **en vivo** y una IA que **hace pruebas por sí misma**, tanto en la web como en todo el PC. Decenas de agentes se mueven sobre la página real, seleccionan elementos como en una herramienta de diseño, registran hallazgos, aplican parches y vuelven a verificar. El agente ve la pantalla, usa el ratón y el teclado reales, comprueba resultados y entrega un informe. Todo se controla desde cualquier cliente MCP (Antigravity, Claude Code, Cursor, Codex) o desde la línea de comandos.
 
 ![Tour de reconstrucción: el enjambre vuelve a construir la página capa por capa](docs/media/tour.png)
 
@@ -16,6 +16,8 @@ Un enjambre de cursores de IA que audita páginas web **en vivo**: decenas de ag
 | **Tickets con ciclo de vida** | `open → claimed → awaiting_reverify → verified / reopened / escalated` (máximo 3 rondas), con pines que siguen a su elemento al hacer scroll. |
 | **Auto-sanación verificada** | Aplica un parche reversible, re-audita y solo lo conserva si el hallazgo desaparece; si no, lo revierte. |
 | **Interacción real** | Clics y teclado `isTrusted: true`, emulación de viewport y navegación, protegidos por un candado por pestaña. |
+| **Pruebas dirigidas por IA** | El agente ve la página (captura o esquema), actúa por texto visible ("haz clic en *Entrar*"), espera condiciones, comprueba resultados y genera un informe de aprobado/fallido. |
+| **Control total del PC** | Captura de pantalla, ratón y teclado reales, ventanas y apertura de programas, en Windows y Linux (X11). Sin restricciones. |
 
 ## Inicio rápido (sin instalar nada en el navegador)
 
@@ -63,15 +65,53 @@ Registra el servidor en tu cliente MCP con la ruta absoluta de tu copia del repo
 
 Si no hay un bus en ejecución, el servidor MCP arranca uno embebido; el código de emparejamiento aparece en `swarm_session_status`.
 
-### Herramientas MCP (22)
+### Herramientas MCP (40)
 
 | Categoría | Herramientas |
 | :--- | :--- |
 | Sesión | `swarm_session_status`, `swarm_select_tab`, `swarm_await_event` |
 | Enjambre | `swarm_configure_swarm`, `swarm_start_tour`, `swarm_stop_tour`, `swarm_spawn_cursors`, `swarm_move_cursor` |
-| Candado e interacción | `swarm_acquire_lock`, `swarm_release_lock`, `swarm_set_viewport`, `swarm_click`, `swarm_fill`, `swarm_press_key`, `swarm_navigate` |
-| Auditoría y tickets | `swarm_run_dom_audit`, `swarm_report_finding`, `swarm_list_findings`, `swarm_claim_findings`, `swarm_mark_fixed`, `swarm_verify_finding` |
-| Auto-sanación | `swarm_heal_findings` |
+| Ver la página | `swarm_screenshot`, `swarm_snapshot` |
+| Actuar en la página | `swarm_click`, `swarm_hover`, `swarm_scroll`, `swarm_fill`, `swarm_press_key`, `swarm_navigate`, `swarm_set_viewport`, `swarm_acquire_lock`, `swarm_release_lock` |
+| Verificar | `swarm_wait_for`, `swarm_expect`, `swarm_test_report` |
+| Auditoría y tickets | `swarm_run_dom_audit`, `swarm_report_finding`, `swarm_list_findings`, `swarm_claim_findings`, `swarm_mark_fixed`, `swarm_verify_finding`, `swarm_heal_findings` |
+| Todo el PC | `swarm_desktop_status`, `swarm_desktop_screenshot`, `swarm_desktop_list_windows`, `swarm_desktop_focus_window`, `swarm_desktop_move`, `swarm_desktop_click`, `swarm_desktop_drag`, `swarm_desktop_scroll`, `swarm_desktop_type`, `swarm_desktop_key`, `swarm_desktop_open` |
+
+## Pruebas dirigidas por la IA
+
+El agente sigue el ciclo **ver → actuar → comprobar → informar**. Un ejemplo de lo que puede pedir un agente:
+
+```text
+swarm_snapshot                       → qué hay en la página (enlaces, botones, campos y sus valores)
+swarm_fill   { text: "Correo", value: "ana@example.com" }   → rellena el campo por su etiqueta
+swarm_click  { text: "Entrar" }                             → clic real sobre el botón con ese texto
+swarm_expect { text: "Hola, Ana", description: "Saluda al usuario", reportOnFail: true }
+swarm_test_report { name: "Inicio de sesión" }              → .qa/test-report-inicio-de-sesion.json
+```
+
+- `swarm_expect` reintenta hasta que se cumple o vence el tiempo. Comprueba visibilidad, texto, valor, número de elementos, URL y título.
+- Con `reportOnFail`, un fallo se convierte en un ticket `P1` con su pin en la página.
+- El informe lista cada acción y cada comprobación. Los valores escritos no se guardan (solo su longitud).
+
+## Control de todo el PC
+
+Las herramientas `swarm_desktop_*` dan al agente la pantalla, el ratón y el teclado del equipo:
+
+```text
+swarm_desktop_screenshot                    → imagen de la pantalla (sus píxeles son coordenadas de clic)
+swarm_desktop_open  { target: "notepad.exe" }
+swarm_desktop_click { x: 640, y: 380 }
+swarm_desktop_type  { text: "Hola desde el enjambre" }
+swarm_desktop_key   { keys: "ctrl+s" }
+```
+
+| Sistema | Requisitos |
+| :--- | :--- |
+| Windows | Ninguno (usa PowerShell, incluido en el sistema). |
+| Linux (X11) | `sudo apt-get install -y xdotool imagemagick`. Wayland no está soportado. |
+| macOS | No soportado. |
+
+> **Sin salvaguardas, a propósito.** No hay interruptor de activación, lista de ventanas permitidas ni límite de acciones. Quien pueda llamar al servidor MCP controla el equipo igual que una persona sentada delante: puede abrir programas, escribir en cualquier ventana y ver todo lo que hay en pantalla. Conecta el servidor solo a agentes en los que confíes.
 
 ## Línea de comandos
 
@@ -90,8 +130,9 @@ Los parches de `heal` solo viven en la página abierta. `.qa/patches.json` conti
 ## Desarrollo
 
 ```bash
-npm test            # 55 pruebas unitarias y de integración (node:test + jsdom)
-npm run test:e2e    # flujo completo en Chromium real; necesita Playwright
+npm test                   # 57 pruebas unitarias y de integración (node:test + jsdom)
+npm run test:e2e           # flujo completo en Chromium real; necesita Playwright
+npm run test:e2e:desktop   # ratón y teclado reales sobre una ventana visible
 npm run lint
 npm run format
 ```
@@ -104,10 +145,10 @@ Para la prueba E2E: `npm i -D playwright && npx playwright install chromium`. De
 packages/
   core/             Bus local (HTTP + WebSocket + SSE), tickets, candados, emparejamiento, parches
   overlay/          Motor del enjambre: cursores, selección, reglas, tour, auditor, pines, HUD
-  mcp-server/       Servidor MCP por stdio (22 herramientas)
+  mcp-server/       Servidor MCP por stdio (40 herramientas)
   extension/        Extensión Chrome MV3 (chrome.debugger, consentimiento, emparejamiento)
   cdp-adapter/      Puente CDP para Chromium con depuración remota
-  desktop-adapter/  Auditoría de ventanas de Windows (experimental)
+  desktop-adapter/  Control del PC: pantalla, ratón, teclado y ventanas (Windows y Linux/X11)
   demo/             Página de pruebas con defectos intencionales
 scripts/            Build del overlay, demo, CLI `swarm`
 test/               Pruebas unitarias, de integración y E2E
@@ -126,5 +167,6 @@ test/               Pruebas unitarias, de integración y E2E
 - Los tickets viven en memoria: se pierden al reiniciar el bus.
 - La auto-sanación tiene recetas para 4 reglas (`overflow-container`, `tap-target-size`, `a11y-accessible-name`, `a11y-form-label`); el resto se omite con el motivo indicado.
 - Las animaciones usan `requestAnimationFrame`: en una pestaña en segundo plano el tour se pausa. Las auditorías y los comandos siguen funcionando.
-- El adaptador de escritorio solo lista y enfoca ventanas de Windows; no dibuja cursores fuera del navegador.
+- El control del PC está probado de extremo a extremo en Linux/X11. El backend de Windows (`win-input.ps1`) está escrito pero **no se ha ejecutado**: compruébalo con `npm run test:e2e:desktop` en tu equipo.
+- En el escritorio se mueve el puntero real del sistema; los cursores de colores del enjambre solo se dibujan dentro del navegador.
 - El repositorio aún no tiene licencia; hasta que se añada una, no es software de código abierto.

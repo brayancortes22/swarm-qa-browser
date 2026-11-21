@@ -24,7 +24,8 @@ Each source file has a single purpose and a doc comment explaining it. Prefer pl
 
 - `npm run lint`, `npm run format:check` and `npm test` pass before merging.
 - Changes to the overlay, adapters or bus also pass `npm run test:e2e` in a real Chromium.
-- Mutating commands require the tab lock; read-only roles cannot mutate.
+- Mutating page commands require the tab lock; read-only roles cannot mutate.
+- Desktop control (`swarm_desktop_*`) is intentionally unrestricted by the project owner's decision; principles I–III apply to the web surface.
 
 ## Development Workflow
 
