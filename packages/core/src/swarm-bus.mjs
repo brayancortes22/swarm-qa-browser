@@ -29,7 +29,17 @@ import {
 import { TicketStore, sanitizeData, sanitizePageText } from './ticket-store.mjs';
 
 /** Tab commands that change the page or its viewport and therefore require the tab lock. */
-export const MUTATING_ACTIONS = new Set(['set_viewport', 'click', 'fill', 'press_key', 'navigate', 'apply_patch', 'revert_patch']);
+export const MUTATING_ACTIONS = new Set([
+  'set_viewport',
+  'click',
+  'hover',
+  'scroll',
+  'fill',
+  'press_key',
+  'navigate',
+  'apply_patch',
+  'revert_patch'
+]);
 const MAX_EVENTS = 250;
 const DEFAULT_COMMAND_TIMEOUT_MS = 15_000;
 const WS_OPEN = 1;

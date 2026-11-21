@@ -93,6 +93,46 @@ export function createInputHandlers({ cdp, state, tabId, evalCtx, waitReady, wai
       emitRoute();
       return { ok: true, viewport: state.viewport, mobile, reset: false };
     },
+    hover: async (a) => {
+      let x = Number(a.x);
+      let y = Number(a.y);
+      if (a.selector) {
+        const { nodeId } = await querySafeNode(cdp, evalCtx, a.selector, waitReady);
+        await cdp.send('DOM.scrollIntoViewIfNeeded', { nodeId }).catch(() => {});
+        const model = (await cdp.send('DOM.getBoxModel', { nodeId }))?.model;
+        const pts = model?.content || model?.border;
+        if (!Array.isArray(pts) || pts.length < 8) throw new Error('Missing box model for hover target');
+        x = (pts[0] + pts[2] + pts[4] + pts[6]) / 4;
+        y = (pts[1] + pts[3] + pts[5] + pts[7]) / 4;
+      } else if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new Error('hover requires selector or coordinates');
+      }
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' });
+      return { ok: true, hovered: true, x, y, selector: a.selector ? sanitizePageText(a.selector) : null };
+    },
+    /** Captures what the page shows, in CSS pixels so coordinates match click targets. */
+    screenshot: async (a) => {
+      await waitReady();
+      const format = a.format === 'png' ? 'png' : 'jpeg';
+      const info =
+        (
+          await cdp.send('Runtime.evaluate', {
+            expression: '({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio || 1 })',
+            returnByValue: true
+          })
+        )?.result?.value || {};
+      const params = { format, ...(format === 'jpeg' ? { quality: Math.max(10, Math.min(100, Number(a.quality) || 70)) } : {}) };
+      let size = { width: info.width, height: info.height };
+      if (a.fullPage) {
+        const content = (await cdp.send('Page.getLayoutMetrics'))?.cssContentSize;
+        if (content) size = { width: Math.ceil(content.width), height: Math.min(Math.ceil(content.height), 12000) };
+        params.captureBeyondViewport = true;
+      }
+      if (size.width > 0 && size.height > 0)
+        params.clip = { x: 0, y: 0, width: size.width, height: size.height, scale: 1 / (info.dpr || 1) };
+      const shot = await cdp.send('Page.captureScreenshot', params);
+      return { data: shot.data, mimeType: `image/${format}`, ...size, fullPage: Boolean(a.fullPage) };
+    },
     click: async (a) => {
       let x = Number(a.x),
         y = Number(a.y);

@@ -222,3 +222,55 @@ test('tour hides every layer, rebuilds them all, and leaves the page byte-identi
   overlay.destroy();
   assert.equal(bodyHtml(), before, 'destroying the overlay mid-tour restores the page');
 });
+
+test('page reader outlines the page, finds elements by text or field label, redacts secrets and scrolls', () => {
+  const dom = page({
+    body: `<h1 id="title">Acceso</h1>
+      <label for="mail">Correo</label><input id="mail" type="email" value="ana@example.com">
+      <input id="pw" type="password" value="hunter2" aria-label="Contraseña">
+      <button id="go"><span>Entrar</span></button>
+      <a id="far" href="/ayuda">Ayuda</a>
+      <button id="ghost" style="display: none">Oculto</button>`,
+    rects: {
+      title: { x: 20, y: 20, width: 300, height: 40 },
+      mail: { x: 20, y: 80, width: 200, height: 40 },
+      pw: { x: 20, y: 140, width: 200, height: 40 },
+      go: { x: 20, y: 200, width: 100, height: 40 },
+      far: { x: 20, y: 3000, width: 80, height: 20 }
+    }
+  });
+  const scrolled = [];
+  dom.win.scrollTo = (options) => scrolled.push(options);
+  dom.win.scrollBy = (options) => scrolled.push(options);
+  const overlay = mountSwarmOverlay({ doc: dom.doc, win: dom.win, swarm: { agents: 0 } });
+
+  const snap = overlay.exec('snapshot', {});
+  assert.deepEqual(
+    snap.elements.map((e) => e.selector),
+    ['#title', '#mail', '#pw', '#go']
+  );
+  assert.equal(snap.elements.find((e) => e.selector === '#pw').value, '[redacted]');
+  assert.equal(snap.elements.find((e) => e.selector === '#mail').value, 'ana@example.com');
+  assert.equal(snap.untrustedPageData, true);
+  assert.equal(overlay.exec('snapshot', { scope: 'page' }).elements.at(-1).selector, '#far');
+
+  const byText = overlay.exec('query', { text: 'entrar' });
+  assert.deepEqual({ found: byText.found, selector: byText.selector, tag: byText.tag }, { found: true, selector: '#go', tag: 'button' });
+  assert.equal(overlay.exec('query', { text: 'Correo', prefer: 'control' }).selector, '#mail');
+  assert.equal(overlay.exec('query', { text: 'contraseña', prefer: 'control' }).selector, '#pw');
+  assert.equal(overlay.exec('query', { text: 'Oculto' }).found, false);
+  assert.equal(overlay.exec('query', { selector: '##bad' }).found, false);
+  assert.deepEqual(
+    { count: overlay.exec('query', { selector: 'button' }).count, missing: overlay.exec('query', { selector: '#nope' }).found },
+    { count: 2, missing: false }
+  );
+
+  assert.equal(overlay.exec('scroll', { to: 'bottom', smooth: false }).ok, true);
+  assert.equal(overlay.exec('scroll', {}).ok, true);
+  assert.equal(overlay.exec('scroll', { selector: '#nope' }).ok, false);
+  assert.deepEqual(
+    scrolled.map((o) => o.behavior),
+    ['auto', 'smooth']
+  );
+  overlay.destroy();
+});

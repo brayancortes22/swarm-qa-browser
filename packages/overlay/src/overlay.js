@@ -5,6 +5,7 @@ import { createHud } from './hud.js';
 import { createInspector } from './inspector.js';
 import { createIssuePins } from './issue-pins.js';
 import { MAIN_WORLD_PROBE_SOURCE, createConsoleCollector } from './network-console.js';
+import { queryElement, scrollPage, snapshotPage } from './page-reader.js';
 import { createPatchManager } from './patches.js';
 import { createRulers } from './rulers.js';
 import { createSelectionLayer } from './selection.js';
@@ -33,7 +34,10 @@ export const OVERLAY_ACTIONS = Object.freeze([
   'stop_tour',
   'inspect_findings',
   'configure_swarm',
-  'get_swarm_state'
+  'get_swarm_state',
+  'snapshot',
+  'query',
+  'scroll'
 ]);
 
 const boxOf = (rect) => ({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
@@ -347,7 +351,10 @@ export function mountSwarmOverlay({
     stop_tour: () => ({ ok: true, stopped: stopTour() }),
     inspect_findings: (cmd) => ({ ok: inspectFindings(cmd.findings, { sweep: cmd.sweep !== false, follow: Boolean(cmd.follow) }) }),
     configure_swarm: (cmd) => ({ ok: true, ...configure(cmd) }),
-    get_swarm_state: () => ({ ok: true, ...getState() })
+    get_swarm_state: () => ({ ok: true, ...getState() }),
+    snapshot: (cmd) => ({ ok: true, ...snapshotPage({ doc, win, scope: cmd.scope === 'page' ? 'page' : 'viewport', max: cmd.max }) }),
+    query: (cmd) => ({ ok: true, ...queryElement({ doc, win, selector: cmd.selector, text: cmd.text, prefer: cmd.prefer }) }),
+    scroll: (cmd) => scrollPage({ doc, win, selector: cmd.selector, to: cmd.to, by: cmd.by, smooth: cmd.smooth !== false })
   };
 
   /** Runs an overlay command by name; unknown actions fail closed. */

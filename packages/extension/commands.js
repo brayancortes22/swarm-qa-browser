@@ -29,6 +29,36 @@ export function createBusCommandHandler(ctx) {
       sendWs({ type: 'route_changed', tabId, ...metaOf(entry) });
       return { ok: true, viewport: entry.viewport, reset: Boolean(cmd.reset) };
     },
+    async hover(tabId, _entry, cmd) {
+      const r = cmd.selector
+        ? await tabMsg(tabId, { type: 'resolve_rect', selector: cmd.selector })
+        : { ok: true, x: Number(cmd.x), y: Number(cmd.y), selector: null };
+      if (!r?.ok || !Number.isFinite(r.x) || !Number.isFinite(r.y)) throw new Error(r?.error || 'Invalid hover target');
+      await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: r.x, y: r.y });
+      return { hovered: true, x: r.x, y: r.y, selector: r.selector };
+    },
+    /** Captures what the tab shows, in CSS pixels so coordinates match click targets. */
+    async screenshot(tabId, _entry, cmd = {}) {
+      const format = cmd.format === 'png' ? 'png' : 'jpeg';
+      const info =
+        (
+          await cdp(tabId, 'Runtime.evaluate', {
+            expression: '({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio || 1 })',
+            returnByValue: true
+          })
+        )?.result?.value || {};
+      const params = { format, ...(format === 'jpeg' ? { quality: Math.max(10, Math.min(100, Number(cmd.quality) || 70)) } : {}) };
+      let size = { width: info.width, height: info.height };
+      if (cmd.fullPage) {
+        const content = (await cdp(tabId, 'Page.getLayoutMetrics'))?.cssContentSize;
+        if (content) size = { width: Math.ceil(content.width), height: Math.min(Math.ceil(content.height), 12000) };
+        params.captureBeyondViewport = true;
+      }
+      if (size.width > 0 && size.height > 0)
+        params.clip = { x: 0, y: 0, width: size.width, height: size.height, scale: 1 / (info.dpr || 1) };
+      const shot = await cdp(tabId, 'Page.captureScreenshot', params);
+      return { data: shot.data, mimeType: `image/${format}`, ...size, fullPage: Boolean(cmd.fullPage) };
+    },
     async click(tabId, _entry, cmd) {
       const r = cmd.selector
         ? await tabMsg(tabId, { type: 'resolve_rect', selector: cmd.selector })
