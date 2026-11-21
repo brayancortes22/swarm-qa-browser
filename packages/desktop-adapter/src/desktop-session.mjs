@@ -22,7 +22,7 @@ export function auditDesktopWindows(options = {}) {
 
   windows.forEach((w) => {
     // 1. Regla de Desborde de Monitor
-    if (w.rect.x < -10 || w.rect.y < -10 || (w.rect.x + w.rect.width) > (monitorWidth + 20) || (w.rect.y + w.rect.height) > (monitorHeight + 20)) {
+    if (w.rect.x < -10 || w.rect.y < -10 || w.rect.x + w.rect.width > monitorWidth + 20 || w.rect.y + w.rect.height > monitorHeight + 20) {
       findings.push({
         id: `DESK-OVERFLOW-${w.hwnd}`,
         ruleId: 'desktop-window-overflow',

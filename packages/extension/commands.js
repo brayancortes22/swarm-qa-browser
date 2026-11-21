@@ -1,7 +1,5 @@
 import { buildKeyEvent, clean } from './helpers.js';
 
-const OVERLAY_CMDS = new Set(['spawn_cursors', 'move_cursor', 'trigger_click', 'remove_cursor', 'set_tickets', 'update_summary', 'apply_patch', 'revert_patch']);
-
 export function createBusCommandHandler(ctx) {
   const { authorizedTabs, cdp, tabMsg, hasHostPermission, syncTabAfterNav, waitTabLoad, runAuditAndCache, sendWs, metaOf } = ctx;
 
@@ -17,10 +15,14 @@ export function createBusCommandHandler(ctx) {
         await cdp(tabId, 'Emulation.clearDeviceMetricsOverride');
         entry.viewport = null;
       } else {
-        const w = Number(cmd.width) || 1440, h = Number(cmd.height) || 900;
+        const w = Number(cmd.width) || 1440,
+          h = Number(cmd.height) || 900;
         const mobile = cmd.mobile !== undefined ? Boolean(cmd.mobile) : w <= 480;
         await cdp(tabId, 'Emulation.setDeviceMetricsOverride', {
-          width: w, height: h, deviceScaleFactor: Number(cmd.deviceScaleFactor) || (mobile ? 2 : 1), mobile
+          width: w,
+          height: h,
+          deviceScaleFactor: Number(cmd.deviceScaleFactor) || (mobile ? 2 : 1),
+          mobile
         });
         entry.viewport = { width: w, height: h };
       }
@@ -32,9 +34,14 @@ export function createBusCommandHandler(ctx) {
         ? await tabMsg(tabId, { type: 'resolve_rect', selector: cmd.selector })
         : { ok: true, x: Number(cmd.x), y: Number(cmd.y), selector: null };
       if (!r?.ok || !Number.isFinite(r.x) || !Number.isFinite(r.y)) throw new Error(r?.error || 'Invalid click target');
-      const button = cmd.button || 'left', clickCount = Number(cmd.clickCount) || 1;
+      const button = cmd.button || 'left',
+        clickCount = Number(cmd.clickCount) || 1;
       for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
-        await cdp(tabId, 'Input.dispatchMouseEvent', type === 'mouseMoved' ? { type, x: r.x, y: r.y } : { type, x: r.x, y: r.y, button, clickCount });
+        await cdp(
+          tabId,
+          'Input.dispatchMouseEvent',
+          type === 'mouseMoved' ? { type, x: r.x, y: r.y } : { type, x: r.x, y: r.y, button, clickCount }
+        );
       }
       return { clicked: true, x: r.x, y: r.y, selector: r.selector, trusted: true };
     },
@@ -72,11 +79,16 @@ export function createBusCommandHandler(ctx) {
 
   return async function handleBusCommand({ commandId, tabId, command = {} }) {
     try {
-      const entry = authorizedTabs.get(tabId), action = command.action || command.type;
+      const entry = authorizedTabs.get(tabId),
+        action = command.action || command.type;
       if (!entry) throw new Error(`Tab ${tabId} is not authorized`);
-      const result = OVERLAY_CMDS.has(action)
-        ? await tabMsg(tabId, { type: action, command }).then((r) => { if (r?.ok === false) throw new Error(r.error || 'Overlay failed'); return r; })
-        : Object.hasOwn(COMMANDS, action) ? await COMMANDS[action](tabId, entry, command) : (() => { throw new Error(`Unknown command "${action}"`); })();
+      // Debugger-backed commands run here; anything else is forwarded to the overlay, which rejects unknown actions.
+      const result = Object.hasOwn(COMMANDS, action)
+        ? await COMMANDS[action](tabId, entry, command)
+        : await tabMsg(tabId, { type: String(action ?? ''), command }).then((r) => {
+            if (r?.ok === false && r.error) throw new Error(r.error);
+            return r;
+          });
       sendWs({ type: 'command_result', commandId, tabId, ok: true, result });
     } catch (err) {
       sendWs({ type: 'command_result', commandId, tabId, ok: false, error: clean(err?.message || String(err)) });
