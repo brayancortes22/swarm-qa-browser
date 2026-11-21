@@ -99,16 +99,33 @@ try {
   assert.ok(status.screen.width >= 800 && status.screen.height >= 600);
   step(`backend ${status.backend}, screen ${status.screen.width}×${status.screen.height}`);
 
-  const shot = await callTool('swarm_desktop_screenshot', {});
-  const jpeg = Buffer.from(shot.image.data, 'base64');
-  assert.ok(
-    jpeg.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])) && jpeg.length > 8000,
-    'screenshot must be a real JPEG of the screen'
-  );
-  const { windows } = await callTool('swarm_desktop_list_windows');
-  const browserWindow = windows.find((w) => /lumen|chrom/i.test(w.title));
-  assert.ok(browserWindow, `browser window not listed: ${windows.map((w) => w.title).join(' | ')}`);
+  // The browser needs a moment to map and paint its window; poll instead of assuming it is already on screen.
+  const until = async (label, probe, timeoutMs = 15_000) => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const value = await probe();
+      if (value) return value;
+      if (Date.now() > deadline) throw new Error(`Timed out waiting for ${label}`);
+      await sleep(250);
+    }
+  };
+  let titles = '';
+  const browserWindow = await until('the browser window to be listed', async () => {
+    const { windows } = await callTool('swarm_desktop_list_windows');
+    titles = windows.map((w) => w.title).join(' | ');
+    return windows.find((w) => /lumen|chrom/i.test(w.title));
+  }).catch((err) => assert.fail(`${err.message}; windows seen: ${titles || '(none)'}`));
   await callTool('swarm_desktop_focus_window', { windowId: browserWindow.id });
+
+  // An empty 1280×800 screen compresses to ~4 KB; a painted page is several times larger.
+  let lastSize = 0;
+  const jpeg = await until('the screenshot to show the painted window', async () => {
+    const shot = await callTool('swarm_desktop_screenshot', {});
+    const bytes = Buffer.from(shot.image.data, 'base64');
+    assert.ok(bytes.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])), 'screenshot must be JPEG data');
+    lastSize = bytes.length;
+    return bytes.length > 12_000 ? bytes : null;
+  }).catch((err) => assert.fail(`${err.message}; last screenshot was ${lastSize} bytes (a blank screen is ~4 KB)`));
   step(`saw the screen (${Math.round(jpeg.length / 1024)} KB JPEG) and found the window "${browserWindow.title.slice(0, 40)}"`);
 
   // Learn where the page sits on screen from a real pointer event, then aim at elements exactly.
