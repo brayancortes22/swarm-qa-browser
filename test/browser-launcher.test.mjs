@@ -4,7 +4,8 @@ import {
   browserArgs,
   browserCandidates,
   findBrowserExecutable,
-  openBrowserSession
+  openBrowserSession,
+  readDevToolsPort
 } from '../packages/cdp-adapter/src/browser-launcher.mjs';
 
 test('browserCandidates lists Chrome, Edge and Brave locations per platform', () => {
@@ -25,12 +26,27 @@ test('findBrowserExecutable honours explicit paths and env overrides and explain
   assert.throws(() => findBrowserExecutable({ exists: () => false, platform: 'linux', env: { PATH: '/usr/bin' } }), /SWARM_BROWSER_PATH/);
 });
 
-test('browserArgs uses a private profile and loopback debugging, and never passes the URL as a flag', () => {
-  const args = browserArgs({ url: 'https://example.com/a?b=--evil', port: 9333, userDataDir: '/tmp/p', headless: true, isRoot: false });
-  assert.deepEqual(args.slice(0, 2), ['--remote-debugging-port=9333', '--user-data-dir=/tmp/p']);
+test('browserArgs uses a private profile and a self-chosen debug port, and never passes the URL as a flag', () => {
+  const args = browserArgs({ url: 'https://example.com/a?b=--evil', userDataDir: '/tmp/p', headless: true, isRoot: false });
+  assert.deepEqual(args.slice(0, 2), ['--remote-debugging-port=0', '--user-data-dir=/tmp/p']);
   assert.ok(args.includes('--headless=new') && !args.includes('--no-sandbox'));
   assert.equal(args.at(-1), 'https://example.com/a?b=--evil');
-  assert.ok(browserArgs({ url: 'http://a.test/', port: 1, userDataDir: '/p', isRoot: true }).includes('--no-sandbox'));
+  assert.ok(browserArgs({ url: 'http://a.test/', userDataDir: '/p', isRoot: true }).includes('--no-sandbox'));
+});
+
+test('readDevToolsPort parses the port the browser wrote and rejects garbage', () => {
+  assert.equal(
+    readDevToolsPort('/profile', () => '41965\n/devtools/browser/abc\n'),
+    41965
+  );
+  assert.throws(() => readDevToolsPort('/profile', () => 'not-a-port'), /Unexpected DevToolsActivePort/);
+  assert.throws(
+    () =>
+      readDevToolsPort('/profile', () => {
+        throw new Error('ENOENT');
+      }),
+    /ENOENT/
+  );
 });
 
 test('openBrowserSession rejects anything that is not an http(s) URL before launching', async () => {

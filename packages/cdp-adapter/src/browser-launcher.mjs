@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { get as httpGet } from 'node:http';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import WebSocket from 'ws';
@@ -48,10 +47,15 @@ export function findBrowserExecutable({ executablePath, platform = process.platf
   return found;
 }
 
-/** Command-line flags for a QA browser window with remote debugging on a private profile. */
-export function browserArgs({ url, port, userDataDir, headless = false, width = 1440, height = 900, isRoot = process.getuid?.() === 0 }) {
+/**
+ * Command-line flags for a QA browser window with remote debugging on a private profile.
+ * `--remote-debugging-port=0` lets the browser pick a free port and write it to the profile's
+ * `DevToolsActivePort` file: that is the port the real (possibly forked headless) browser bound,
+ * so there is no port race and no reliance on the launcher process staying alive.
+ */
+export function browserArgs({ url, userDataDir, headless = false, width = 1440, height = 900, isRoot = process.getuid?.() === 0 }) {
   return [
-    `--remote-debugging-port=${port}`,
+    '--remote-debugging-port=0',
     `--user-data-dir=${userDataDir}`,
     '--no-first-run',
     '--no-default-browser-check',
@@ -63,11 +67,13 @@ export function browserArgs({ url, port, userDataDir, headless = false, width = 
   ];
 }
 
-async function freePort() {
-  const server = createServer();
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
+/** Reads the debugging port the browser actually bound from the profile's DevToolsActivePort file. */
+export function readDevToolsPort(userDataDir, read = readFileSync) {
+  const first = String(read(join(userDataDir, 'DevToolsActivePort'), 'utf8'))
+    .split('\n')[0]
+    .trim();
+  const port = Number(first);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`Unexpected DevToolsActivePort content: ${first}`);
   return port;
 }
 
@@ -106,8 +112,7 @@ export async function openBrowserSession({ url, registryPath, executablePath, he
   const cleanProfile = () => {
     if (!userDataDir) rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   };
-  const port = await freePort();
-  const child = spawn(executable, browserArgs({ url: target.href, port, userDataDir: profile, headless, width, height }), {
+  const child = spawn(executable, browserArgs({ url: target.href, userDataDir: profile, headless, width, height }), {
     stdio: 'ignore'
   });
   // The LAUNCHER process exiting is not the same as the browser dying: with `--headless=new` newer
@@ -133,20 +138,30 @@ export async function openBrowserSession({ url, registryPath, executablePath, he
     }
   };
 
+  let port = 0;
+  let browserWsUrl = '';
   try {
-    // Poll the debug endpoint until the browser answers and has opened the page, regardless of the
-    // launcher PID. Only treat it as a failure if nothing ever answers within the startup window.
+    // Discover the port the browser actually bound (written to the profile's DevToolsActivePort),
+    // then poll the debug endpoint for the page — regardless of the launcher PID. The forked
+    // headless browser writes that file too, so a clean launcher exit is not a failure on its own.
     const deadline = Date.now() + STARTUP_TIMEOUT_MS;
-    let page = null;
-    let browserWsUrl = '';
-    while (!page) {
+    while (!port) {
       if (Date.now() > deadline) {
         const detail =
           launcherExit === null
-            ? 'the debug endpoint never answered'
-            : `launcher exited (${launcherExit}) and the debug endpoint never answered`;
+            ? 'it never reported a debugging port'
+            : `launcher exited (${launcherExit}) and no debugging port was reported`;
         throw new Error(`Timed out starting "${executable}": ${detail}`);
       }
+      try {
+        port = readDevToolsPort(profile);
+      } catch {
+        await sleep(POLL_MS);
+      }
+    }
+    let page = null;
+    while (!page) {
+      if (Date.now() > deadline) throw new Error(`Timed out starting "${executable}": the page never opened on port ${port}`);
       if (!browserWsUrl) {
         const version = await getJson(`http://127.0.0.1:${port}/json/version`).catch(() => null);
         browserWsUrl = version?.webSocketDebuggerUrl || '';
@@ -171,7 +186,7 @@ export async function openBrowserSession({ url, registryPath, executablePath, he
       }
     };
   } catch (err) {
-    await closeBrowserOverCdp(`http://127.0.0.1:${port}`).catch(() => {});
+    if (port) await closeBrowserOverCdp(browserWsUrl || `http://127.0.0.1:${port}`).catch(() => {});
     await killLauncher();
     cleanup();
     throw err;
